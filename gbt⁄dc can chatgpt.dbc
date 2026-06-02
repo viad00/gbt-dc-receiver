@@ -1,0 +1,188 @@
+VERSION "GBT27930-2015 DBC for SavvyCAN (generated)"
+
+NS_ :
+    NS_DESC_
+    CM_
+    BA_DEF_
+    BA_
+    VAL_
+    CAT_DEF_
+    CAT_
+    FILTER
+    BA_DEF_SGTYPE_
+    SIG_TYPE_REF_
+    SGTYPE_
+    SIG_GROUP_
+    SIG_VALTYPE_
+    BO_TX_BU_
+    VAL_TABLE_
+    SIG_TYPE_EV_
+    SIG_TYPE_SUBSET_
+    SIG_VALTYPE_END
+BS_:
+
+BU_: Vector__XXX CHARGER BMS
+
+#######################################################
+# Helper: ID chosen as (PGN << 8) ; extended frame = 1
+# Source node: CHARGER (charger->BMS) ; BMS->CHARGER use BMS node
+#######################################################
+
+# CHM - Charger Handshake (PGN 9728) 3 bytes
+BO_ 2490368 CHM: 3 Vector__XXX
+ SG_ CHM_ProtocolVersion : 0|24@1+ (1,0) [0|16777215] "" Vector__XXX
+ # Note: 3-byte protocol version: bytes3,2 = 0x0001, byte1 = 0x01 for V1.1 per standard. :contentReference[oaicite:5]{index=5}
+
+# BHM - BMS Handshake (PGN 9984) 2 bytes
+BO_ 2555904 BHM: 2 Vector__XXX
+ SG_ BHM_MaxAllowVoltage : 0|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ # SPN2601 (0.1V/bit). :contentReference[oaicite:6]{index=6}
+
+# CRM - Charger Identification (PGN 256) 8 bytes
+BO_ 65536 CRM: 8 Vector__XXX
+ SG_ CRM_IdentificationResult : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ CRM_ChargerID : 8|32@1+ (1,0) [0|4294967295] "" Vector__XXX
+ SG_ CRM_RegionASCII_1 : 40|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ CRM_RegionASCII_2 : 48|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ CRM_RegionASCII_3 : 56|8@1+ (1,0) [0|255] "" Vector__XXX
+ # SPN2560, SPN2561, SPN2562 (region ASCII optional). :contentReference[oaicite:7]{index=7}
+
+# BRM - BMS and Vehicle Identification (PGN 512) 41 bytes -> uses TP if >8 (multiframe)
+BO_ 131072 BRM: 8 Vector__XXX
+ SG_ BRM_BMS_ProtocolVersion : 0|24@1+ (1,0) [0|16777215] "" Vector__XXX
+ SG_ BRM_BatteryType : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BRM_RatedCapacity_Ah : 32|16@1+ (0.1,0) [0|6553.5] "Ah" Vector__XXX
+ SG_ BRM_RatedTotalVoltage : 48|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ # Note: BRM total length >8 bytes per standard; full structure available via TP. See doc. :contentReference[oaicite:8]{index=8}
+
+# BCP - Battery Charging Parameters (PGN 1536) 13 bytes (uses 8+ -> TP) - first fields present
+BO_ 393216 BCP: 8 Vector__XXX
+ SG_ BCP_CellMaxAllowChargeVoltage : 0|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
+ SG_ BCP_MaxAllowChargeCurrent : 16|16@1+ (0.1,-400) [-400|6553.5] "A" Vector__XXX
+ SG_ BCP_NominalTotalEnergy : 32|16@1+ (0.1,0) [0|6553.5] "kW*h" Vector__XXX
+ SG_ BCP_MaxAllowTotalVoltage : 48|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ SG_ BCP_MaxAllowTemp : 64|8@1+ (1,-50) [-50|205] "degC" Vector__XXX
+ SG_ BCP_SOC : 72|16@1+ (0.1,0) [0|100] "%" Vector__XXX
+ SG_ BCP_CurrentBatteryVoltage : 88|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ # Note: full BCP is 13 bytes per standard; multi-frame for bytes past 8. :contentReference[oaicite:9]{index=9}
+
+# CTS - Charger Time Sync (PGN 1792) 7 bytes
+BO_ 458752 CTS: 7 Vector__XXX
+ SG_ CTS_Seconds_BCD : 0|8@1+ (1,0) [0|99] "" Vector__XXX
+ SG_ CTS_Minutes_BCD : 8|8@1+ (1,0) [0|59] "" Vector__XXX
+ SG_ CTS_Hours_BCD : 16|8@1+ (1,0) [0|23] "" Vector__XXX
+ SG_ CTS_Day_BCD : 24|8@1+ (1,0) [1|31] "" Vector__XXX
+ SG_ CTS_Month_BCD : 32|8@1+ (1,0) [1|12] "" Vector__XXX
+ SG_ CTS_Year_BCD : 40|16@1+ (1,0) [0|9999] "" Vector__XXX
+ # SPN2823 BCD fields. :contentReference[oaicite:10]{index=10}
+
+# CML - Charger Maximum Output (PGN 2048) 8 bytes
+BO_ 524288 CML: 8 Vector__XXX
+ SG_ CML_MaxOutputVoltage : 0|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ SG_ CML_MinOutputVoltage : 16|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ SG_ CML_MaxOutputCurrent : 32|16@1+ (0.1,-400) [-400|6553.5] "A" Vector__XXX
+ SG_ CML_MinOutputCurrent : 48|16@1+ (0.1,-400) [-400|6553.5] "A" Vector__XXX
+ # SPN2824..2827. :contentReference[oaicite:11]{index=11}
+
+# BRO - Battery Ready (PGN 2304) 1 byte
+BO_ 589824 BRO: 1 Vector__XXX
+ SG_ BRO_BMSReadyFlag : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ # SPN2829 (0xAA = ready). :contentReference[oaicite:12]{index=12}
+
+# CRO - Charger Output Ready (PGN 2560) 1 byte
+BO_ 655360 CRO: 1 Vector__XXX
+ SG_ CRO_ChargerReadyFlag : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ # SPN2830 (0xAA = ready). :contentReference[oaicite:13]{index=13}
+
+# BCL - Battery Charging Load/Demand (PGN 4096) 5 bytes
+BO_ 1048576 BCL: 5 Vector__XXX
+ SG_ BCL_VoltageRequest : 0|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ SG_ BCL_CurrentRequest : 16|16@1+ (0.1,-400) [-400|6553.5] "A" Vector__XXX
+ SG_ BCL_ChargingMode : 32|8@1+ (1,0) [0|255] "" Vector__XXX
+ # SPN3072 (V, 0.1V/bit), SPN3073 (I, 0.1A/bit offset -400), SPN3074 mode (0x01 CV, 0x02 CC). :contentReference[oaicite:14]{index=14}
+
+# BCS - Battery Charging Summary (PGN 4352) 9 bytes
+BO_ 1114112 BCS: 9 Vector__XXX
+ SG_ BCS_ChargingVoltage : 0|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ SG_ BCS_ChargingCurrent : 16|16@1+ (0.1,-400) [-400|6553.5] "A" Vector__XXX
+ SG_ BCS_HighestCellVoltage : 32|12@1+ (0.01,0) [0|409.5] "V" Vector__XXX
+ SG_ BCS_HighestCellGroup : 44|4@1+ (1,0) [0|15] "" Vector__XXX
+ SG_ BCS_SOC : 48|8@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ BCS_RemainingTimeMin : 56|16@1+ (1,0) [0|600] "min" Vector__XXX
+ # SPN3075..3079; note some fields packed (12bit + 4bit). :contentReference[oaicite:15]{index=15}
+
+# CCS - Charger Charging State (PGN 4608) 8 bytes
+BO_ 1179648 CCS: 8 Vector__XXX
+ SG_ CCS_OutputVoltage : 0|16@1+ (0.1,0) [0|6553.5] "V" Vector__XXX
+ SG_ CCS_OutputCurrent : 16|16@1+ (0.1,-400) [-400|6553.5] "A" Vector__XXX
+ SG_ CCS_AccumChargeTimeMin : 32|16@1+ (1,0) [0|600] "min" Vector__XXX
+ SG_ CCS_ChargeAllow : 48|2@1+ (1,0) [0|3] "" Vector__XXX
+ # SPN3081, SPN3082, SPN3083, SPN3929 (2 bits). :contentReference[oaicite:16]{index=16}
+
+# BSM - Battery Status Message (PGN 4864) 7 bytes
+BO_ 1245184 BSM: 7 Vector__XXX
+ SG_ BSM_HighestCellIndex : 0|8@1+ (1,0) [1|256] "" Vector__XXX
+ SG_ BSM_HighestTemp : 8|8@1+ (1,-50) [-50|205] "degC" Vector__XXX
+ SG_ BSM_HighestTempIndex : 16|8@1+ (1,0) [1|128] "" Vector__XXX
+ SG_ BSM_LowestTemp : 24|8@1+ (1,-50) [-50|205] "degC" Vector__XXX
+ SG_ BSM_LowestTempIndex : 32|8@1+ (1,0) [1|128] "" Vector__XXX
+ SG_ BSM_CellVoltageStatus : 40|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BSM_SOC_Status : 42|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BSM_Overcurrent_Status : 44|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BSM_TemperatureHigh_Status : 46|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BSM_Insulation_Status : 48|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BSM_Connector_Status : 50|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BSM_ChargeAllow : 52|2@1+ (1,0) [0|3] "" Vector__XXX
+ # SPN3085..3096 bitfields—see standard for meanings. :contentReference[oaicite:17]{index=17}
+
+# BST - BMS Abort Charge (PGN 6400) 4 bytes
+BO_ 1638400 BST: 4 Vector__XXX
+ SG_ BST_AbortReason : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ BST_AbortFaults : 8|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ BST_AbortErrorReason : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ # SPN3511..3513. :contentReference[oaicite:18]{index=18}
+
+# CST - Charger Abort Charge (PGN 6656) 4 bytes
+BO_ 1703936 CST: 4 Vector__XXX
+ SG_ CST_AbortReason : 0|8@1+ (1,0) [0|255] "" Vector__XXX
+ SG_ CST_AbortFaults : 8|16@1+ (1,0) [0|65535] "" Vector__XXX
+ SG_ CST_AbortErrorReason : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ # SPN3521..3523. :contentReference[oaicite:19]{index=19}
+
+# BSD - BMS Statistics (PGN 7168) 7 bytes
+BO_ 1835008 BSD: 7 Vector__XXX
+ SG_ BSD_FinalSOC : 0|8@1+ (1,0) [0|100] "%" Vector__XXX
+ SG_ BSD_MinCellVoltage : 8|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
+ SG_ BSD_MaxCellVoltage : 24|16@1+ (0.01,0) [0|655.35] "V" Vector__XXX
+ SG_ BSD_MinTemp : 40|8@1+ (1,-50) [-50|205] "degC" Vector__XXX
+ SG_ BSD_MaxTemp : 48|8@1+ (1,-50) [-50|205] "degC" Vector__XXX
+ # SPN3601..3605. :contentReference[oaicite:20]{index=20}
+
+# CSD - Charger Statistics (PGN 7424) 8 bytes
+BO_ 1900544 CSD: 8 Vector__XXX
+ SG_ CSD_TotalChargeTimeMin : 0|16@1+ (1,0) [0|600] "min" Vector__XXX
+ SG_ CSD_OutputEnergy_kWh_x10 : 16|16@1+ (0.1,0) [0|6553.5] "kW*h" Vector__XXX
+ SG_ CSD_ChargerID : 32|32@1+ (1,0) [0|4294967295] "" Vector__XXX
+ # SPN3611..3613. :contentReference[oaicite:21]{index=21}
+
+# BEM - BMS Error Message (PGN 7680) 4 bytes
+BO_ 1966080 BEM: 4 Vector__XXX
+ SG_ BEM_Flags1 : 0|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BEM_Flags2 : 2|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BEM_Flags3 : 8|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ BEM_Reserved : 16|16@1+ (1,0) [0|65535] "" Vector__XXX
+ # See table for bit-meanings. :contentReference[oaicite:22]{index=22}
+
+# CEM - Charger Error Message (PGN 7936) 4 bytes
+BO_ 2031616 CEM: 4 Vector__XXX
+ SG_ CEM_Flags1 : 0|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ CEM_Flags2 : 8|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ CEM_Flags3 : 16|2@1+ (1,0) [0|3] "" Vector__XXX
+ SG_ CEM_Reserved : 24|8@1+ (1,0) [0|255] "" Vector__XXX
+ # See table for bit-meanings. :contentReference[oaicite:23]{index=23}
+
+# NOTE: Multiframe PGNs (length>8) such as BMV(5376), BMT(5632), BSP(5888), BRM full content etc.
+# are marked in the spec as TP-messages. SavvyCAN supports J1939 TP: enable TP reassembly to see full payloads.
+# SPN list and field scaling follows GB/T27930-2015. :contentReference[oaicite:24]{index=24}
+
+CM_ "Generated from GB/T27930-2015 PDF. Check multiframe/TP handling for long messages."

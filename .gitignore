@@ -1,0 +1,44 @@
+# STM32CubeIDE / Eclipse project files
+.settings/
+*.launch
+*.log
+
+# Build output folders
+Debug/
+Release/
+build/
+
+# Object files, executables, libraries, and other build artifacts
+*.o
+*.obj
+*.elf
+*.map
+*.bin
+*.hex
+*.axf
+*.dep
+*.d
+*.suo
+*.su
+*.lst
+*.list
+*.tmp
+*.bak
+*.cache
+
+# Generated code and tool files
+*.ioc.*
+*.log
+*.swp
+*~
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Misc
+.DS_Store
+
+# Ignore binary
+*.bin
+*.diff
