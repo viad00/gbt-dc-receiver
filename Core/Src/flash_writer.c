@@ -20,6 +20,8 @@ NOTE: Adjust FLASH_LOG_START and FLASH_LOG_SIZE to appropriate sectors for your 
 -------------------------------------------------------------------- */
 
 #include "main.h"
+#include "can.h"
+#include "gbt_27930_bms.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -55,6 +57,7 @@ If you are unsure, change these macros to correct addresses for your project.
 static uint32_t flash_log_write_addr = FLASH_LOG_START; /* next write address */
 static uint32_t current_flash_log_magic = FLASH_LOG_MAGIC;
 static bool flash_log_rx_started = false;
+static bool flash_log_enabled = true;
 
 /* UART command handling (simple): receive ASCII commands terminated by \n or \r.
 
@@ -120,6 +123,8 @@ FlashLog_UARTSend("INIT OK\n\r");
 /* Write one entry if space available. Immediate write to flash (no buffering). */
  void FlashLog_Write(uint32_t id, uint8_t *buf, uint8_t dlc, bool is_tx)
 {
+if (!flash_log_enabled) return;
+
 /* start logging only when CAN is up and first RX was seen */
 HAL_CAN_StateTypeDef can_state = HAL_CAN_GetState(&hcan1);
 if (can_state != HAL_CAN_STATE_READY && can_state != HAL_CAN_STATE_LISTENING) {
@@ -386,6 +391,36 @@ flash_log_rx_started = false;
 FlashLog_UARTSend("ERASE OK\r\n");
 }
 
+/* ===== Public API for display UI ===== */
+
+void FlashLog_SetEnabled(bool enabled)
+{
+    flash_log_enabled = enabled;
+}
+
+bool FlashLog_IsEnabled(void)
+{
+    return flash_log_enabled;
+}
+
+uint32_t FlashLog_GetUsedBytes(void)
+{
+    if (flash_log_write_addr >= FLASH_LOG_START) {
+        return flash_log_write_addr - FLASH_LOG_START;
+    }
+    return 0u;
+}
+
+uint32_t FlashLog_GetTotalBytes(void)
+{
+    return FLASH_LOG_SIZE;
+}
+
+void FlashLog_Erase(void)
+{
+    FlashLog_EraseAll();
+}
+
 /* UART RX complete callback - accumulate a command line */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -394,7 +429,6 @@ if (huart->Instance != UART4) {
      return;
 
 }
-stop_tx = 1;
 char c = (char)uart_rx_char;
 if (c == '\r' || c == '\n') {
      if (uart_cmd_idx > 0) {
@@ -415,6 +449,64 @@ if (c == '\r' || c == '\n') {
              int l = snprintf(line, sizeof(line), "LOG_START=0x%08lX SIZE=0x%08lX USED=0x%08lX\r\n",
                  (unsigned long)FLASH_LOG_START, (unsigned long)FLASH_LOG_SIZE,
                  (unsigned long)(flash_log_write_addr - FLASH_LOG_START));
+             HAL_UART_Transmit(&huart4, (uint8_t*)line, l, 200);
+         } else if (strncmp(uart_cmd_buf, "RSET ", 5) == 0) {
+             /* RSET <FIELD> <value> - set a GbtRuntime field */
+             char field_name[32];
+             int32_t val;
+             if (sscanf(&uart_cmd_buf[5], "%31s %ld", field_name, &val) == 2) {
+                 GbtRuntimeField f = GbtRuntimeFieldFromString(field_name);
+                 if (f < GBT27930_RUNTIME_FIELD_COUNT) {
+                     GbtSetRuntimeField(f, val);
+                     char line[80];
+                     int l = snprintf(line, sizeof(line), "SET %s=%ld\r\n", field_name, (long)val);
+                     HAL_UART_Transmit(&huart4, (uint8_t*)line, l, 200);
+                 } else {
+                     FlashLog_UARTSend("UNKNOWN FIELD\r\n");
+                 }
+             } else {
+                 FlashLog_UARTSend("USAGE: RSET <FIELD> <value>\r\n");
+             }
+         } else if (strncmp(uart_cmd_buf, "RGET ", 5) == 0) {
+             /* RGET <FIELD> - get a GbtRuntime field */
+             char field_name[32];
+             if (sscanf(&uart_cmd_buf[5], "%31s", field_name) == 1) {
+                 GbtRuntimeField f = GbtRuntimeFieldFromString(field_name);
+                 if (f < GBT27930_RUNTIME_FIELD_COUNT) {
+                     int32_t val = GbtGetRuntimeField(f);
+                     char line[80];
+                     int l = snprintf(line, sizeof(line), "%s=%ld\r\n", field_name, (long)val);
+                     HAL_UART_Transmit(&huart4, (uint8_t*)line, l, 200);
+                 } else {
+                     FlashLog_UARTSend("UNKNOWN FIELD\r\n");
+                 }
+             } else {
+                 FlashLog_UARTSend("USAGE: RGET <FIELD>\r\n");
+             }
+         } else if (strcmp(uart_cmd_buf, "DCAN ON") == 0) {
+             DebugCan_SetEnabled(true);
+             FlashLog_UARTSend("DEBUG CAN: ON\r\n");
+         } else if (strcmp(uart_cmd_buf, "DCAN OFF") == 0) {
+             DebugCan_SetEnabled(false);
+             FlashLog_UARTSend("DEBUG CAN: OFF\r\n");
+         } else if (strcmp(uart_cmd_buf, "DCAN") == 0) {
+             FlashLog_UARTSend(DebugCan_IsEnabled() ? "DEBUG CAN: ON\r\n" : "DEBUG CAN: OFF\r\n");
+         } else if (strcmp(uart_cmd_buf, "RLIST") == 0) {
+             /* RLIST - list all runtime fields with current values */
+             FlashLog_UARTSend("--- Runtime fields ---\r\n");
+             for (uint32_t i = 0; i < (uint32_t)GBT27930_RUNTIME_FIELD_COUNT; ++i) {
+                 int32_t val = GbtGetRuntimeField((GbtRuntimeField)i);
+                 const char *nm = GbtRuntimeFieldName((GbtRuntimeField)i);
+                 char line[64];
+                 int l = snprintf(line, sizeof(line), "  %s=%ld\r\n", nm, (long)val);
+                 HAL_UART_Transmit(&huart4, (uint8_t*)line, l, 200);
+             }
+         } else if (strcmp(uart_cmd_buf, "STATE") == 0) {
+             /* STATE - print current charge state */
+             GbtChargeState st = GbtGetChargeState();
+             const char *name = GbtChargeStateName(st);
+             char line[48];
+             int l = snprintf(line, sizeof(line), "STATE=%s\r\n", name);
              HAL_UART_Transmit(&huart4, (uint8_t*)line, l, 200);
          } else {
              FlashLog_UARTSend("UNKNOWN CMD\r\n");

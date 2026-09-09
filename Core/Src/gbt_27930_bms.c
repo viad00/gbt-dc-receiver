@@ -94,6 +94,11 @@ typedef struct {
 	uint16_t rated_V_dV;
 } BattInfo;
 
+#define ABLSOLUTE_MAX_CELL_VOLTAGE_MV 4255u // 4.255V per cell, 96s pack, 4.255V * 96 = 408.48V
+#define ABSOLUTE_MAX_CHARGE_CURRENT_dA 500u
+#define NOMINAL_TOTAL_ENERGY_0p1KWH 200u
+#define ABSOLUTE_MAX_CHARGE_VOLTAGE_dV 4090u // 409V
+
 // Placeholder info, does not need to be accurate for testing
 static BattInfo g_batt = {
 	.manufacturer = {'L','A','D','A'},
@@ -113,13 +118,13 @@ static BattInfo g_batt = {
 // Runtime parameters
 static GbtRuntime g_runtime = {
 	.demandVoltage_dV = 3931, // Start with demand voltage equal to rated voltage
-	.demandCurrent_dA = -400, // Start with demand current at -40A
+	.demandCurrent_dA = -20, // Start with demand current at 2A
 	.mode = 0x01, // Start in CV mode
-	.packVoltage_dV = 3500, // Initial pack voltage in dV, set to 350V, will be updated based on messages received
+	.packVoltage_dV = 3400, // Initial pack voltage in dV, set to 340V, will be updated based on messages received
 	.packCurrent_dA = 0,    // Initial pack current in dA, set to 0A, will be updated based on messages received
 	.tailSwitchVoltage_dV = 3920u, // Volage threshold for tail request in dV, set to 392V (Approx 4.1V per cell in 96s cell pack)
 	.tailSwitchCurrent_dA = 70,    // Current threshold for tail request in dA, set to 7A
-	.tailVoltage_dV = 4032u,      // Tail request voltage in dV, set to 403.2V (4.2V per cell in 96s cell pack)
+	.tailVoltage_dV = 4080u,      // Tail request voltage in dV, set to 408.0V (4.25V per cell in 96s cell pack)
 	.tailCurrent_dA = -70,        // Tail request current in dA, set to -7A
 	.maxCell_mV = 4000, // Dummy max cell voltage reported
 	.maxCellGroup = 0, // Dummy max cell group
@@ -240,10 +245,10 @@ static void build_and_send_BCP(void)
 {
 	uint8_t p[13];
 	memset(p, 0xFF, sizeof(p));
-	put_u16le(&p[0], encode_cell_0p01V(4200)); // 4.2V max per cell
-	put_u16le(&p[2], encode_current_off400((int16_t)500)); // 50A max
-	put_u16le(&p[4], (uint16_t)200u); // Nomonal total energy in 0.1kWh, set to 20kWh
-	put_u16le(&p[6], g_runtime.tailVoltage_dV + 50u); // Max charge voltage in dV, set to 5V above tail request voltage
+	put_u16le(&p[0], encode_cell_0p01V(ABLSOLUTE_MAX_CELL_VOLTAGE_MV)); // 4.255V max per cell
+	put_u16le(&p[2], encode_current_off400((int16_t)ABSOLUTE_MAX_CHARGE_CURRENT_dA)); // 50A max
+	put_u16le(&p[4], (uint16_t)NOMINAL_TOTAL_ENERGY_0p1KWH); // Nominal total energy in 0.1kWh, set to 20kWh
+	put_u16le(&p[6], encode_voltage_dV(ABSOLUTE_MAX_CHARGE_VOLTAGE_dV)); // Max charge voltage in dV, set to 5V above tail request voltage
 	p[8] = (uint8_t)(50 + 50); // Max battery temperature in C, set to 50C
 	put_u16le(&p[9], (uint16_t)(g_runtime.soc_percent * 10u)); // Remaining energy in 0.1%, set to current SOC * 10
 	put_u16le(&p[11], g_runtime.packVoltage_dV); // Current battery voltage in dV
@@ -668,6 +673,47 @@ int32_t GbtGetRuntimeField(GbtRuntimeField field)
 		case GBT27930_RUNTIME_PERMIT_CHARGE: return (int32_t)g_runtime.permit_charge;
 		default: return 0;
 	}
+}
+
+static const char *field_names[] = {
+	"DEMAND_VOLTAGE",
+	"DEMAND_CURRENT",
+	"MODE",
+	"PACK_VOLTAGE",
+	"PACK_CURRENT",
+	"TAIL_SWITCH_VOLTAGE",
+	"TAIL_SWITCH_CURRENT",
+	"TAIL_VOLTAGE",
+	"TAIL_CURRENT",
+	"MAX_CELL_MV",
+	"MAX_CELL_GROUP",
+	"SOC_PERCENT",
+	"REMAINING_MIN",
+	"MAX_CELL_INDEX",
+	"TEMP_MAX_C",
+	"TEMP_MAX_INDEX",
+	"TEMP_MIN_C",
+	"TEMP_MIN_INDEX",
+	"PERMIT_CHARGE",
+};
+
+const char *GbtRuntimeFieldName(GbtRuntimeField field)
+{
+	if (field < GBT27930_RUNTIME_FIELD_COUNT) {
+		return field_names[field];
+	}
+	return "UNKNOWN";
+}
+
+GbtRuntimeField GbtRuntimeFieldFromString(const char *name)
+{
+	if (name == NULL) return GBT27930_RUNTIME_FIELD_COUNT;
+	for (uint32_t i = 0; i < (uint32_t)GBT27930_RUNTIME_FIELD_COUNT; ++i) {
+		if (strcmp(name, field_names[i]) == 0) {
+			return (GbtRuntimeField)i;
+		}
+	}
+	return GBT27930_RUNTIME_FIELD_COUNT;
 }
 
 void GbtSetRuntimeField(GbtRuntimeField field, int32_t value)

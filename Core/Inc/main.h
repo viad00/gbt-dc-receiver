@@ -32,12 +32,16 @@ extern "C" {
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
-extern uint8_t stop_tx;
 extern CAN_HandleTypeDef hcan1;
 extern I2C_HandleTypeDef hi2c2;
 extern UART_HandleTypeDef huart4;
 void FlashLog_Init(void);
 void FlashLog_Write(uint32_t id, uint8_t *buf, uint8_t dlc, bool is_tx);
+void FlashLog_SetEnabled(bool enabled);
+bool FlashLog_IsEnabled(void);
+uint32_t FlashLog_GetUsedBytes(void);
+uint32_t FlashLog_GetTotalBytes(void);
+void FlashLog_Erase(void);
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/

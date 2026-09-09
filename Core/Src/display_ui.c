@@ -33,7 +33,8 @@ typedef enum {
 
 typedef enum {
   UI_SCREEN_MAIN = 0,
-  UI_SCREEN_PARAMS
+  UI_SCREEN_PARAMS,
+  UI_SCREEN_FLASH
 } UiScreen;
 
 typedef struct {
@@ -55,6 +56,7 @@ static UiScreen ui_screen = UI_SCREEN_MAIN;
 static uint8_t ui_main_selected = 0u;
 static uint8_t ui_param_selected = 0u;
 static bool ui_param_edit = false;
+static uint8_t ui_flash_selected = 0u;
 static bool ui_dirty = true;
 static bool oled_ready = false;
 static uint32_t ui_last_refresh = 0u;
@@ -389,7 +391,66 @@ static void UI_RenderParams(void)
     }
   }
 
-  SSD1306_DrawText(8u, 56u, "^V SEL #ED *BK");
+  SSD1306_DrawText(8u, 56u, "^V SEL #ED *FS");
+}
+
+#define UI_FLASH_ITEM_COUNT 3u
+#define UI_FLASH_ITEM_LOG   0u
+#define UI_FLASH_ITEM_MEM   1u
+#define UI_FLASH_ITEM_ERASE 2u
+
+static const char *UI_FlashItemLabel(uint8_t idx)
+{
+  switch (idx) {
+    case UI_FLASH_ITEM_LOG:   return "LOG";
+    case UI_FLASH_ITEM_MEM:   return "MEM";
+    case UI_FLASH_ITEM_ERASE: return "ERASE";
+    default: return "?";
+  }
+}
+
+static void UI_RenderFlash(void)
+{
+  char line[24];
+  char val[16];
+
+  SSD1306_Clear();
+  SSD1306_DrawRect(0u, 0u, SSD1306_WIDTH, SSD1306_HEIGHT);
+  SSD1306_DrawText(8u, 4u, "FLASH");
+
+  /* Item 0: Logging on/off */
+  {
+    const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_LOG);
+    bool on = FlashLog_IsEnabled();
+    const char *state = on ? "ON" : "OFF";
+    char marker = (ui_flash_selected == UI_FLASH_ITEM_LOG) ? '#' : ' ';
+    (void)snprintf(line, sizeof(line), "%c%s  %s", marker, label, state);
+    SSD1306_DrawText(8u, 18u, line);
+  }
+
+  /* Item 1: Memory used/total */
+  {
+    const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_MEM);
+    uint32_t used = FlashLog_GetUsedBytes();
+    uint32_t total = FlashLog_GetTotalBytes();
+    /* Show as KB */
+    uint32_t used_kb = used / 1024u;
+    uint32_t total_kb = total / 1024u;
+    (void)snprintf(val, sizeof(val), "%lu/%luK", (unsigned long)used_kb, (unsigned long)total_kb);
+    char marker = (ui_flash_selected == UI_FLASH_ITEM_MEM) ? '#' : ' ';
+    (void)snprintf(line, sizeof(line), "%c%s %s", marker, label, val);
+    SSD1306_DrawText(8u, 30u, line);
+  }
+
+  /* Item 2: Erase all */
+  {
+    const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_ERASE);
+    char marker = (ui_flash_selected == UI_FLASH_ITEM_ERASE) ? '#' : ' ';
+    (void)snprintf(line, sizeof(line), "%c%s", marker, label);
+    SSD1306_DrawText(8u, 42u, line);
+  }
+
+  SSD1306_DrawText(8u, 56u, "^V SEL #TOG *BK");
 }
 
 static void UI_ApplyDelta(GbtRuntimeField field, int32_t delta)
@@ -498,13 +559,54 @@ static void UI_HandleMainButton(uint8_t button_id)
   }
 }
 
+static void UI_HandleFlashButton(uint8_t button_id)
+{
+  if (button_id == UI_BTN_STAR) {
+    ui_screen = UI_SCREEN_MAIN;
+    ui_main_selected = 0u;
+    ui_dirty = true;
+    return;
+  }
+
+  if (button_id == UI_BTN_UP) {
+    ui_flash_selected = (ui_flash_selected == 0u) ? (UI_FLASH_ITEM_COUNT - 1u) : (ui_flash_selected - 1u);
+    ui_dirty = true;
+    return;
+  }
+
+  if (button_id == UI_BTN_DOWN) {
+    ui_flash_selected = (ui_flash_selected + 1u) % UI_FLASH_ITEM_COUNT;
+    ui_dirty = true;
+    return;
+  }
+
+  /* # = toggle/select */
+  if (button_id == UI_BTN_SHARP) {
+    switch (ui_flash_selected) {
+      case UI_FLASH_ITEM_LOG:
+        FlashLog_SetEnabled(!FlashLog_IsEnabled());
+        break;
+      case UI_FLASH_ITEM_MEM:
+        /* read-only, refresh only */
+        break;
+      case UI_FLASH_ITEM_ERASE:
+        FlashLog_Erase();
+        break;
+      default:
+        break;
+    }
+    ui_dirty = true;
+  }
+}
+
 static void UI_HandleParamsButton(uint8_t button_id)
 {
   uint8_t count = (uint8_t)(sizeof(ui_all_fields) / sizeof(ui_all_fields[0]));
 
   if (button_id == UI_BTN_STAR) {
-    ui_screen = UI_SCREEN_MAIN;
+    ui_screen = UI_SCREEN_FLASH;
     ui_param_edit = false;
+    ui_flash_selected = 0u;
     ui_dirty = true;
     return;
   }
@@ -573,8 +675,10 @@ void UI_Loop(void)
   if (UI_PopButtonEvent(&button_id)) {
     if (ui_screen == UI_SCREEN_MAIN) {
       UI_HandleMainButton(button_id);
-    } else {
+    } else if (ui_screen == UI_SCREEN_PARAMS) {
       UI_HandleParamsButton(button_id);
+    } else {
+      UI_HandleFlashButton(button_id);
     }
   }
 
@@ -591,8 +695,10 @@ void UI_Loop(void)
   if (oled_ready && ui_dirty) {
     if (ui_screen == UI_SCREEN_MAIN) {
       UI_RenderMain();
-    } else {
+    } else if (ui_screen == UI_SCREEN_PARAMS) {
       UI_RenderParams();
+    } else {
+      UI_RenderFlash();
     }
 
     if (SSD1306_Update()) {

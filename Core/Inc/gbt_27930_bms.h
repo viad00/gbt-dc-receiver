@@ -142,6 +142,8 @@ void GbtGetRuntime(GbtRuntime *out);
 void GbtSetRuntime(const GbtRuntime *in);
 int32_t GbtGetRuntimeField(GbtRuntimeField field);
 void GbtSetRuntimeField(GbtRuntimeField field, int32_t value);
+const char *GbtRuntimeFieldName(GbtRuntimeField field);
+GbtRuntimeField GbtRuntimeFieldFromString(const char *name);
 
 #ifdef __cplusplus
 }

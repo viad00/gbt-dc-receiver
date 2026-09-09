@@ -27,10 +27,21 @@ typedef struct {
 } CanRingBuff;
 
 static CanRingBuff ring_buffer;
+static bool debug_can_enabled = false;
+
+void DebugCan_SetEnabled(bool enabled)
+{
+	debug_can_enabled = enabled;
+}
+
+bool DebugCan_IsEnabled(void)
+{
+	return debug_can_enabled;
+}
 
 static void DebugSendCanMsg(uint32_t id, uint8_t *buf, uint8_t len)
 {
-	if (stop_tx) return;
+	if (!debug_can_enabled) return;
 
 	memset(TmpString, 0, sizeof(TmpString));
 	TmpStringLen = snprintf(TmpString, sizeof(TmpString),

@@ -47,10 +47,21 @@ The logger exposes a simple UART CLI over `UART4` at `115200 8N1`.
 
 Connect a serial terminal to `UART4` (`PA0` TX, `PA1` RX) and send commands terminated by newline or carriage return.
 
+#### Flash log commands
+
 - `INFO` — prints log region start, size, and used bytes.
 - `COUNT` — prints the number of logged sequences found in flash.
 - `SEQ <n>` — streams sequence `n` in CSV-like format over UART.
 - `ERASE` — erases the configured flash log region.
+
+#### Runtime field commands
+
+- `RLIST` — lists all runtime fields with current values.
+- `RGET <FIELD>` — reads a single field (e.g. `RGET SOC_PERCENT`).
+- `RSET <FIELD> <value>` — writes a value to a field, clamped to allowed range (e.g. `RSET DEMAND_CURRENT 100`).
+- `STATE` — prints the current charge state (`WAIT`, `BHM`, `BRM`, `BCP`, `BRO`, `CHG`, `END`).
+
+> **See [CLI_RUNTIME.md](CLI_RUNTIME.md) for the full field reference, units, allowed ranges, and examples.**
 
 Example terminal session:
 
