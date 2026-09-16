@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef enum {
 	GBT27930_CHARGE_STATE_WAIT_CHM = 0,
@@ -37,6 +38,7 @@ typedef struct {
 	int8_t   tempMin_C;
 	uint8_t  tempMinIndex;
 	uint8_t  permit_charge;
+	uint16_t bro_pre_delay_s; /* seconds BRO=0x00 is sent before 0xAA */
 } GbtRuntime;
 
 typedef enum {
@@ -59,6 +61,7 @@ typedef enum {
 	GBT27930_RUNTIME_TEMP_MIN_C,
 	GBT27930_RUNTIME_TEMP_MIN_INDEX,
 	GBT27930_RUNTIME_PERMIT_CHARGE,
+	GBT27930_RUNTIME_BRO_PRE_DELAY_S,
 	GBT27930_RUNTIME_FIELD_COUNT
 } GbtRuntimeField;
 
@@ -140,10 +143,14 @@ GbtChargeState GbtGetChargeState(void);
 const char *GbtChargeStateName(GbtChargeState state);
 void GbtGetRuntime(GbtRuntime *out);
 void GbtSetRuntime(const GbtRuntime *in);
+void GbtRestoreDefaults(void);
 int32_t GbtGetRuntimeField(GbtRuntimeField field);
 void GbtSetRuntimeField(GbtRuntimeField field, int32_t value);
 const char *GbtRuntimeFieldName(GbtRuntimeField field);
 GbtRuntimeField GbtRuntimeFieldFromString(const char *name);
+bool GbtIsConnectingPhase(void);
+uint32_t GbtConnectingRemainingMs(void);
+void GbtManualStateNext(void);
 
 #ifdef __cplusplus
 }

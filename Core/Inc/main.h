@@ -42,6 +42,10 @@ bool FlashLog_IsEnabled(void);
 uint32_t FlashLog_GetUsedBytes(void);
 uint32_t FlashLog_GetTotalBytes(void);
 void FlashLog_Erase(void);
+void SettingsStore_Init(void);
+bool SettingsStore_Save(void);
+void SettingsStore_Clear(void);
+bool SettingsStore_IsValid(void);
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/

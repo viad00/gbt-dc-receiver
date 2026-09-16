@@ -109,6 +109,7 @@ int main(void)
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
   FlashLog_Init();
+  SettingsStore_Init(); /* restore settings from flash before UI/charge setup */
   CanInit();
   LED(4);
   UI_Init();

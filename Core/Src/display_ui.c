@@ -9,6 +9,7 @@
 
 #include "main.h"
 #include "gbt_27930_bms.h"
+#include "settings_store.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -22,6 +23,13 @@
 #define UI_REFRESH_MS           250u
 #define OLED_RETRY_INIT_MS      2000u
 #define UI_BUTTON_ACTIVE_STATE   GPIO_PIN_SET
+#define UI_CONNECT_BLINK_MS     500u
+#define UI_MANUAL_MODE_NONE     0u
+#define UI_MANUAL_MODE_STEP     1u /* Bench mode: # steps state machine */
+#define UI_MANUAL_MODE_COUNT    2u /* Number of STEP modes (cycles with #) */
+#define UI_NOTIF_TIMEOUT_MS     2500u /* Result popup duration */
+#define UI_NOTIF_GRACE_MS       500u  /* Ignore keys right after popup opens (bounce) */
+#define UI_BTN_QUEUE_SIZE       16u   /* Ring buffer: no presses lost while main loop blocks */
 
 typedef enum {
   UI_BTN_UP = 0,
@@ -34,7 +42,9 @@ typedef enum {
 typedef enum {
   UI_SCREEN_MAIN = 0,
   UI_SCREEN_PARAMS,
-  UI_SCREEN_FLASH
+  UI_SCREEN_FLASH,
+  UI_SCREEN_CONNECT,
+  UI_SCREEN_NOTIF   /* transient result popup: settings saved/cleared etc */
 } UiScreen;
 
 typedef struct {
@@ -57,11 +67,21 @@ static uint8_t ui_main_selected = 0u;
 static uint8_t ui_param_selected = 0u;
 static bool ui_param_edit = false;
 static uint8_t ui_flash_selected = 0u;
+static uint8_t ui_manual_mode = UI_MANUAL_MODE_NONE; /* Bench manual state stepping */
+#define UI_FLASH_CONFIRM_NONE 0xFFu
+static uint8_t ui_flash_confirm = UI_FLASH_CONFIRM_NONE; /* NONE = none, else index of item awaiting # confirm */
+static bool ui_notif_active = false;
+static bool ui_notif_success = false;
+static char ui_notif_text[16] = {0};
+static uint32_t ui_notif_start = 0u;
+static UiScreen ui_notif_return_screen = UI_SCREEN_MAIN; /* where to go back after popup */
 static bool ui_dirty = true;
 static bool oled_ready = false;
 static uint32_t ui_last_refresh = 0u;
 static uint32_t oled_last_init_try = 0u;
-static volatile uint32_t ui_button_events = 0u;
+static volatile uint8_t ui_button_queue[UI_BTN_QUEUE_SIZE];
+static volatile uint8_t ui_button_queue_head = 0u; /* write pos (ISR) */
+static volatile uint8_t ui_button_queue_tail = 0u; /* read pos (main loop) */
 static volatile uint32_t ui_last_irq_at[UI_BTN_COUNT] = {0u};
 
 static UiButtonState ui_buttons[UI_BTN_COUNT] = {
@@ -103,6 +123,7 @@ static const UiFieldMeta ui_all_fields[] = {
   {GBT27930_RUNTIME_TEMP_MIN_C, "TN", "C", 1, 0, 1},
   {GBT27930_RUNTIME_TEMP_MIN_INDEX, "NI", "", 1, 0, 1},
   {GBT27930_RUNTIME_PERMIT_CHARGE, "PC", "", 1, 0, 1},
+  {GBT27930_RUNTIME_BRO_PRE_DELAY_S, "BD", "S", 1, 0, 1},
 };
 
 static const char *UI_GetStateText(GbtChargeState state)
@@ -339,6 +360,48 @@ static void UI_DrawFieldLine(uint8_t x, uint8_t y, char marker, const UiFieldMet
   SSD1306_DrawText(x, y, line);
 }
 
+static void UI_RenderConnect(void)
+{
+  char line[24];
+  uint32_t remain_ms = GbtConnectingRemainingMs();
+  bool blink_on = ((HAL_GetTick() / UI_CONNECT_BLINK_MS) & 1u) == 0u;
+
+  SSD1306_Clear();
+  SSD1306_DrawRect(0u, 0u, SSD1306_WIDTH, SSD1306_HEIGHT);
+
+  if (blink_on) {
+    /* Full-screen flashing CONNECT BATTERY, centered */
+    SSD1306_DrawText(11u, 20u, "CONNECT");
+    SSD1306_DrawText(5u, 32u, "BATTERY");
+  }
+
+  (void)snprintf(line, sizeof(line), "READY IN %lus", (unsigned long)((remain_ms + 999u) / 1000u));
+  SSD1306_DrawText(20u, 52u, line);
+}
+
+static void UI_FlushButtonEvents(void);
+
+static void UI_ShowNotification(const char *text, bool success)
+{
+  (void)snprintf(ui_notif_text, sizeof(ui_notif_text), "%s", text);
+  ui_notif_success = success;
+  ui_notif_start = HAL_GetTick();
+  ui_notif_return_screen = (ui_screen == UI_SCREEN_NOTIF) ? ui_notif_return_screen : ui_screen;
+  ui_screen = UI_SCREEN_NOTIF;
+  ui_notif_active = true;
+  UI_FlushButtonEvents(); /* drop queued/bouncing button events */
+  ui_dirty = true;
+}
+
+static void UI_RenderNotif(void)
+{
+  SSD1306_Clear();
+  SSD1306_DrawRect(0u, 0u, SSD1306_WIDTH, SSD1306_HEIGHT);
+  SSD1306_DrawText(28u, 14u, ui_notif_success ? "DONE!" : "FAILED");
+  SSD1306_DrawText(8u, 30u, ui_notif_text);
+  SSD1306_DrawText(8u, 52u, "ANY KEY: BACK");
+}
+
 static void UI_RenderMain(void)
 {
   char line[24];
@@ -357,8 +420,9 @@ static void UI_RenderMain(void)
   }
 
   if (ui_main_selected == 3u) {
-    SSD1306_DrawText(8u, 56u, "^VSTOP #NEXT *LIST");
-    SSD1306_DrawText(42u, 48u, "*STOP");
+    SSD1306_DrawText(8u, 56u, ui_manual_mode == UI_MANUAL_MODE_STEP
+                                 ? "^VSWITCH #NEXT *LIST" : "^VSTOP #NEXT *LIST");
+    SSD1306_DrawText(42u, 48u, ui_manual_mode == UI_MANUAL_MODE_STEP ? "*SWITCH" : "*STOP");
   } else {
     SSD1306_DrawText(8u, 56u, "^VSEL  #NEXT *LIST");
     SSD1306_DrawText(42u, 48u, " STOP");
@@ -383,6 +447,10 @@ static void UI_RenderParams(void)
   (void)snprintf(title, sizeof(title), "PARAMS %s", ui_param_edit ? "EDIT" : "NAV");
   SSD1306_DrawText(8u, 4u, title);
 
+  if (ui_manual_mode == UI_MANUAL_MODE_STEP) {
+    SSD1306_DrawText(78u, 4u, "MAN");
+  }
+
   for (uint8_t row = 0u; row < 4u; row++) {
     uint8_t index = (uint8_t)(top + row);
     if (index < count) {
@@ -394,10 +462,13 @@ static void UI_RenderParams(void)
   SSD1306_DrawText(8u, 56u, "^V SEL #ED *FS");
 }
 
-#define UI_FLASH_ITEM_COUNT 3u
-#define UI_FLASH_ITEM_LOG   0u
-#define UI_FLASH_ITEM_MEM   1u
-#define UI_FLASH_ITEM_ERASE 2u
+#define UI_FLASH_ITEM_COUNT 6u
+#define UI_FLASH_ITEM_SAVE  0u
+#define UI_FLASH_ITEM_CLEAR 1u
+#define UI_FLASH_ITEM_LOG   2u
+#define UI_FLASH_ITEM_MEM   3u
+#define UI_FLASH_ITEM_ERASE 4u
+#define UI_FLASH_ITEM_STEP  5u
 
 static const char *UI_FlashItemLabel(uint8_t idx)
 {
@@ -405,6 +476,9 @@ static const char *UI_FlashItemLabel(uint8_t idx)
     case UI_FLASH_ITEM_LOG:   return "LOG";
     case UI_FLASH_ITEM_MEM:   return "MEM";
     case UI_FLASH_ITEM_ERASE: return "ERASE";
+    case UI_FLASH_ITEM_STEP:  return "STEP";
+    case UI_FLASH_ITEM_SAVE:  return "SAVE STG";
+    case UI_FLASH_ITEM_CLEAR: return "CLR STG";
     default: return "?";
   }
 }
@@ -418,17 +492,38 @@ static void UI_RenderFlash(void)
   SSD1306_DrawRect(0u, 0u, SSD1306_WIDTH, SSD1306_HEIGHT);
   SSD1306_DrawText(8u, 4u, "FLASH");
 
-  /* Item 0: Logging on/off */
+  /* Confirmation banner if a save/clear is pending */
+  if (ui_flash_confirm != UI_FLASH_CONFIRM_NONE) {
+    SSD1306_DrawText(78u, 4u, "CONF");
+  }
+
+  /* Item 0: Save settings to flash */
+  {
+    const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_SAVE);
+    char marker = (ui_flash_selected == UI_FLASH_ITEM_SAVE) ? '#' : ' ';
+    (void)snprintf(line, sizeof(line), "%c%s", marker, label);
+    SSD1306_DrawText(8u, 14u, line);
+  }
+
+  /* Item 1: Clear settings page */
+  {
+    const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_CLEAR);
+    char marker = (ui_flash_selected == UI_FLASH_ITEM_CLEAR) ? '#' : ' ';
+    (void)snprintf(line, sizeof(line), "%c%s", marker, label);
+    SSD1306_DrawText(8u, 24u, line);
+  }
+
+  /* Item 2: Logging on/off */
   {
     const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_LOG);
     bool on = FlashLog_IsEnabled();
     const char *state = on ? "ON" : "OFF";
     char marker = (ui_flash_selected == UI_FLASH_ITEM_LOG) ? '#' : ' ';
     (void)snprintf(line, sizeof(line), "%c%s  %s", marker, label, state);
-    SSD1306_DrawText(8u, 18u, line);
+    SSD1306_DrawText(8u, 34u, line);
   }
 
-  /* Item 1: Memory used/total */
+  /* Item 3: Memory used/total */
   {
     const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_MEM);
     uint32_t used = FlashLog_GetUsedBytes();
@@ -439,18 +534,25 @@ static void UI_RenderFlash(void)
     (void)snprintf(val, sizeof(val), "%lu/%luK", (unsigned long)used_kb, (unsigned long)total_kb);
     char marker = (ui_flash_selected == UI_FLASH_ITEM_MEM) ? '#' : ' ';
     (void)snprintf(line, sizeof(line), "%c%s %s", marker, label, val);
-    SSD1306_DrawText(8u, 30u, line);
+    SSD1306_DrawText(8u, 44u, line);
   }
 
-  /* Item 2: Erase all */
+  /* Item 4: Erase all + manual bench state stepping */
   {
     const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_ERASE);
     char marker = (ui_flash_selected == UI_FLASH_ITEM_ERASE) ? '#' : ' ';
     (void)snprintf(line, sizeof(line), "%c%s", marker, label);
-    SSD1306_DrawText(8u, 42u, line);
+    SSD1306_DrawText(8u, 54u, line);
+  }
+  {
+    const char *label = UI_FlashItemLabel(UI_FLASH_ITEM_STEP);
+    char marker = (ui_flash_selected == UI_FLASH_ITEM_STEP) ? '#' : ' ';
+    (void)snprintf(line, sizeof(line), "%c%s %s", marker, label,
+                   (ui_manual_mode == UI_MANUAL_MODE_STEP) ? "MAN" : "AUTO");
+    SSD1306_DrawText(68u, 54u, line);
   }
 
-  SSD1306_DrawText(8u, 56u, "^V SEL #TOG *BK");
+  SSD1306_DrawText(58u, 4u, "^V # *BK");
 }
 
 static void UI_ApplyDelta(GbtRuntimeField field, int32_t delta)
@@ -485,6 +587,7 @@ static void UI_ApplyDelta(GbtRuntimeField field, int32_t delta)
     case GBT27930_RUNTIME_TEMP_MIN_C:
     case GBT27930_RUNTIME_TEMP_MIN_INDEX:
     case GBT27930_RUNTIME_PERMIT_CHARGE:
+    case GBT27930_RUNTIME_BRO_PRE_DELAY_S:
       value += delta;
       break;
     default:
@@ -510,19 +613,11 @@ static bool UI_PopButtonEvent(uint8_t *button_id)
   uint32_t primask = __get_PRIMASK();
   __disable_irq();
 
-  uint32_t events = ui_button_events;
   bool found = false;
-
-  if (events != 0u) {
-    for (uint8_t i = 0; i < UI_BTN_COUNT; i++) {
-      uint32_t mask = (1u << i);
-      if ((events & mask) != 0u) {
-        ui_button_events &= ~mask;
-        *button_id = i;
-        found = true;
-        break;
-      }
-    }
+  if (ui_button_queue_head != ui_button_queue_tail) {
+    *button_id = ui_button_queue[ui_button_queue_tail];
+    ui_button_queue_tail = (uint8_t)((ui_button_queue_tail + 1u) % UI_BTN_QUEUE_SIZE);
+    found = true;
   }
 
   if (primask == 0u) {
@@ -532,24 +627,38 @@ static bool UI_PopButtonEvent(uint8_t *button_id)
   return found;
 }
 
+static void UI_FlushButtonEvents(void)
+{
+  ui_button_queue_head = ui_button_queue_tail;
+}
+
 static void UI_HandleMainButton(uint8_t button_id)
 {
   uint8_t quick_count = (uint8_t)((sizeof(ui_quick_fields) / sizeof(ui_quick_fields[0])) + 1u);
+  /* In manual bench mode the 4th row is SWITCH: ^/V step the state machine
+   * (GbtManualStateNext) instead of stopping the charge. */
+  bool switch_row = (ui_main_selected == 3u) && (ui_manual_mode == UI_MANUAL_MODE_STEP);
+
   if (button_id == UI_BTN_UP) {
-    if (ui_main_selected == 3u) {
+    if (switch_row) {
+      GbtManualStateNext();
+    } else if (ui_main_selected == 3u) {
       StopChargeManual();
     } else {
       UI_ApplyDelta(ui_quick_fields[ui_main_selected].field, ui_quick_fields[ui_main_selected].step);
     }
     ui_dirty = true;
   } else if (button_id == UI_BTN_DOWN) {
-    if (ui_main_selected == 3u) {
+    if (switch_row) {
+      GbtManualStateNext();
+    } else if (ui_main_selected == 3u) {
       StopChargeManual();
     } else {
       UI_ApplyDelta(ui_quick_fields[ui_main_selected].field, -ui_quick_fields[ui_main_selected].step);
     }
     ui_dirty = true;
   } else if (button_id == UI_BTN_SHARP) {
+    /* # always cycles the selection so quick settings remain reachable */
     ui_main_selected = (uint8_t)((ui_main_selected + 1u) % quick_count);
     ui_dirty = true;
   } else if (button_id == UI_BTN_STAR) {
@@ -557,6 +666,20 @@ static void UI_HandleMainButton(uint8_t button_id)
     ui_param_edit = false;
     ui_dirty = true;
   }
+}
+
+static void UI_HandleNotifButton(uint8_t button_id)
+{
+  (void)button_id;
+  /* Ignore keys during the grace period (contact bounce of the opening key) */
+  if ((uint32_t)(HAL_GetTick() - ui_notif_start) < UI_NOTIF_GRACE_MS) {
+    return;
+  }
+  /* Any key dismisses the notification */
+  ui_screen = ui_notif_return_screen;
+  ui_notif_active = false;
+  UI_FlushButtonEvents();
+  ui_dirty = true;
 }
 
 static void UI_HandleFlashButton(uint8_t button_id)
@@ -570,18 +693,36 @@ static void UI_HandleFlashButton(uint8_t button_id)
 
   if (button_id == UI_BTN_UP) {
     ui_flash_selected = (ui_flash_selected == 0u) ? (UI_FLASH_ITEM_COUNT - 1u) : (ui_flash_selected - 1u);
+    ui_flash_confirm = UI_FLASH_CONFIRM_NONE;
     ui_dirty = true;
     return;
   }
 
   if (button_id == UI_BTN_DOWN) {
     ui_flash_selected = (ui_flash_selected + 1u) % UI_FLASH_ITEM_COUNT;
+    ui_flash_confirm = UI_FLASH_CONFIRM_NONE;
     ui_dirty = true;
     return;
   }
 
   /* # = toggle/select */
   if (button_id == UI_BTN_SHARP) {
+    if (ui_flash_confirm != UI_FLASH_CONFIRM_NONE) {
+      /* Confirmation pass for destructive/settings actions */
+      if (ui_flash_confirm == UI_FLASH_ITEM_SAVE) {
+        UI_ShowNotification("SETTINGS SAVED", SettingsStore_Save());
+      } else if (ui_flash_confirm == UI_FLASH_ITEM_CLEAR) {
+        /* Clear: erase page AND restore default settings in RAM */
+        SettingsStore_Clear();
+        GbtRestoreDefaults();
+        FlashLog_SetEnabled(true);
+        UI_ShowNotification("DEFAULTS RESTORED", true);
+      }
+      ui_flash_confirm = UI_FLASH_CONFIRM_NONE;
+      ui_dirty = true;
+      return;
+    }
+
     switch (ui_flash_selected) {
       case UI_FLASH_ITEM_LOG:
         FlashLog_SetEnabled(!FlashLog_IsEnabled());
@@ -591,6 +732,14 @@ static void UI_HandleFlashButton(uint8_t button_id)
         break;
       case UI_FLASH_ITEM_ERASE:
         FlashLog_Erase();
+        break;
+      case UI_FLASH_ITEM_STEP:
+        /* Cycle: AUTO -> STEP (manual advance) -> AUTO */
+        ui_manual_mode = (uint8_t)((ui_manual_mode + 1u) % UI_MANUAL_MODE_COUNT);
+        break;
+      case UI_FLASH_ITEM_SAVE:
+      case UI_FLASH_ITEM_CLEAR:
+        ui_flash_confirm = ui_flash_selected;
         break;
       default:
         break;
@@ -643,7 +792,7 @@ void UI_Init(void)
   for (uint8_t i = 0; i < UI_BTN_COUNT; i++) {
     ui_last_irq_at[i] = now;
   }
-  ui_button_events = 0u;
+  ui_button_queue_head = ui_button_queue_tail = 0u;
 
   oled_ready = SSD1306_Init();
   ui_last_refresh = now;
@@ -663,7 +812,19 @@ void UI_OnButtonInterrupt(uint16_t gpio_pin)
 
   if ((sample == UI_BUTTON_ACTIVE_STATE) && ((uint32_t)(now - ui_last_irq_at[idx]) >= UI_DEBOUNCE_MS)) {
     ui_last_irq_at[idx] = now;
-    ui_button_events |= (1u << idx);
+    /* Push into ring buffer - multiple presses of the same button are
+     * preserved instead of collapsing into one bitmask bit. */
+    uint8_t next_head = (uint8_t)((ui_button_queue_head + 1u) % UI_BTN_QUEUE_SIZE);
+    if (next_head != ui_button_queue_tail) {
+      ui_button_queue[ui_button_queue_head] = idx;
+      ui_button_queue_head = next_head;
+    }
+    /* else: queue full - drop oldest (tail) to keep newest press */
+    else {
+      ui_button_queue_tail = (uint8_t)((ui_button_queue_tail + 1u) % UI_BTN_QUEUE_SIZE);
+      ui_button_queue[ui_button_queue_head] = idx;
+      ui_button_queue_head = next_head;
+    }
   }
 }
 
@@ -673,13 +834,18 @@ void UI_Loop(void)
   uint32_t now = HAL_GetTick();
 
   if (UI_PopButtonEvent(&button_id)) {
-    if (ui_screen == UI_SCREEN_MAIN) {
+    if (ui_screen == UI_SCREEN_NOTIF) {
+      UI_HandleNotifButton(button_id);
+    } else if (ui_screen == UI_SCREEN_MAIN) {
       UI_HandleMainButton(button_id);
     } else if (ui_screen == UI_SCREEN_PARAMS) {
       UI_HandleParamsButton(button_id);
     } else {
       UI_HandleFlashButton(button_id);
     }
+    /* Button handling (e.g. flash save/clear) can take seconds; re-read tick
+     * so timeouts computed below don't underflow. */
+    now = HAL_GetTick();
   }
 
   if ((uint32_t)(now - ui_last_refresh) >= UI_REFRESH_MS) {
@@ -687,9 +853,28 @@ void UI_Loop(void)
     ui_dirty = true;
   }
 
-  if (!oled_ready && oled_last_init_try >= OLED_RETRY_INIT_MS) {
+  /* Auto-dismiss the notification popup after timeout */
+  if (ui_notif_active && (ui_screen == UI_SCREEN_NOTIF) &&
+      ((uint32_t)(HAL_GetTick() - ui_notif_start) >= UI_NOTIF_TIMEOUT_MS)) {
+    ui_screen = ui_notif_return_screen;
+    ui_notif_active = false;
+    ui_dirty = true;
+  }
+
+  if (!oled_ready && ((uint32_t)(now - oled_last_init_try) >= OLED_RETRY_INIT_MS)) {
 	  oled_ready = SSD1306_Init();
 	  oled_last_init_try = now;
+  }
+
+  /* Auto-switch to the CONNECT BATTERY screen during the pre-BRO window,
+   * but only if the user is on the main screen (settings screens stay
+   * accessible). Works in both AUTO and manual bench mode. */
+  if (GbtIsConnectingPhase() && (ui_screen == UI_SCREEN_MAIN)) {
+    ui_screen = UI_SCREEN_CONNECT;
+    ui_dirty = true;
+  } else if (!GbtIsConnectingPhase() && ui_screen == UI_SCREEN_CONNECT) {
+    ui_screen = UI_SCREEN_MAIN;
+    ui_dirty = true;
   }
 
   if (oled_ready && ui_dirty) {
@@ -697,6 +882,10 @@ void UI_Loop(void)
       UI_RenderMain();
     } else if (ui_screen == UI_SCREEN_PARAMS) {
       UI_RenderParams();
+    } else if (ui_screen == UI_SCREEN_CONNECT) {
+      UI_RenderConnect();
+    } else if (ui_screen == UI_SCREEN_NOTIF) {
+      UI_RenderNotif();
     } else {
       UI_RenderFlash();
     }

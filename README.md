@@ -27,6 +27,7 @@ Key behaviors include:
   - `main.c` - startup and peripheral initialization
   - `gbt_27930_bms.c` - GB/T 27930 state machine and CAN helper logic
   - `display_ui.c` - UI handling and runtime parameter adjustment
+  - `settings_store.c` - persistent settings storage in a dedicated flash sector
   - `can.c` - CAN transmit/receive helpers
   - `flash_writer.c` - flash logging support
   - `helpers.c` - common utilities
@@ -114,17 +115,22 @@ The firmware uses the following GPIO and peripheral pin assignments:
 
 ## UI usage
 
-The firmware supports an SSD1306 display with four buttons. The UI has two screens:
+The firmware supports an SSD1306 display with four buttons. The UI has the following screens:
 
 - **Main screen**: quick access to demand voltage/current, mode, and charger status.
 - **Parameters screen**: browse and edit all runtime fields.
+- **Settings screen** (FLASH): settings save/clear, log control, bench manual mode.
+- **CONNECT BATTERY screen**: full-screen blinking prompt shown while BRO reports "not ready".
+- **Notification popup**: transient result screen (e.g. settings saved/cleared), auto-dismisses after 2.5 s.
 
 ### Button meaning
 
 - `BTN_UP` (`PA10`)  — increment selected value or move selection up.
 - `BTN_DOWN` (`PA9`) — decrement selected value or move selection down.
-- `BTN_SHARP` (`PC6`) — on main screen, step to the next quick field; on params screen, toggle edit mode.
+- `BTN_SHARP` (`PC6`) — on main screen, step to the next quick field; on params screen, toggle edit mode; on settings screen, toggle/confirm the selected item.
 - `BTN_STAR` (`PC7`) — open/close the parameters screen.
+
+Button events are queued in a ring buffer, so no presses are lost while the main loop is busy (e.g. during flash erase/write).
 
 ### Main screen behavior
 
@@ -139,7 +145,41 @@ The main screen shows:
   - `PI` = pack current from charger
   - `PC` = permit charge
 
-Use `#` to select the next quick field. When the stop entry is selected, `UP` or `DOWN` triggers a manual stop.
+Use `#` to select the next quick field. When the stop entry is selected, `UP` or `DOWN` triggers a manual stop. In bench manual mode (see below) the stop entry is labeled `SWITCH` and `UP`/`DOWN` instead advance the state machine one step.
+
+### CONNECT BATTERY screen
+
+Per GB/T 27930, BRO reports `0x00` (BMS not ready) for a configurable pre-delay (`BRO_PRE_DELAY_S`, default 5 s, range 0–60 s, editable as `BD` in the parameters screen) before switching to `0xAA` (BMS ready). During this window the display shows a full-screen blinking `CONNECT BATTERY` prompt (500 ms period) with a `READY IN Ns` countdown. The screen appears automatically when the BMS enters the connecting phase and returns to the main screen once BRO switches to `0xAA`.
+
+### Bench manual mode (state stepping)
+
+For desk testing without a charger, the state machine can be stepped manually:
+
+1. Open the settings screen (`*` from params screen) and select the `STEP` item.
+2. Press `#` to cycle `AUTO` -> `STEP` -> `AUTO`.
+3. Return to the main screen. In `STEP` mode:
+   - the 4th row is labeled `SWITCH` instead of `STOP`;
+   - `UP`/`DOWN` on the `SWITCH` row call `GbtManualStateNext()` — the state machine advances one step: `WAIT` -> `BHM` -> `BRM` -> `BCP` -> `CHG` -> `END` -> `WAIT`;
+   - `#` still cycles the field selection on all rows.
+
+In `AUTO` mode the 4th row is `STOP` and `UP`/`DOWN` trigger a manual charge stop, as before. The params screen shows a `MAN` badge while manual mode is active.
+
+### Settings screen (FLASH)
+
+Opened with `*` from the parameters screen. Items (top to bottom):
+
+- `SAVE STG` — save all current settings to flash. Requires confirmation: first `#` shows the `CONF` banner, second `#` performs the save. A popup shows `DONE! / SETTINGS SAVED` on success or `FAILED` on error.
+- `CLR STG` — erase the settings page and restore default settings in RAM (log enabled, default runtime values). Same double-`#` confirmation; popup shows `DONE! / DEFAULTS RESTORED`.
+- `LOG` — toggle CAN flash logging on/off.
+- `MEM` — read-only log memory usage (used/total KB).
+- `ERASE` — erase the CAN log region.
+- `STEP` — cycle bench manual mode (`AUTO`/`STEP`), see above.
+
+`^`/`v` move the selection, `*` returns to the main screen.
+
+### Settings persistence
+
+Settings are stored in a dedicated flash sector (sector 11, `0x080E0000`, 128 KB on STM32F405), completely separate from the CAN log area (sectors 5–10, `0x08020000..0x080DFFFF`), so saving/clearing settings never affects logging. The stored blob contains the full `GbtRuntime`, the log-enabled flag, and a magic/version/CRC header for validation. Settings are restored on boot (`SettingsStore_Init()` in `main.c`). If the page is empty or invalid (e.g. after `CLR STG`), defaults are used.
 
 <details>
 <summary>Click to see image of main screen</summary>
@@ -166,7 +206,7 @@ Image: ![image of Parameters screen](images/runtime%20params%20edit%20menu.jpg "
 
 ### Note
 
-There is no settings saving functionality, at it was not needed, but it will be helpfull if someone intended use it on daily basis (TODO). To change default settings (that are loaded on startup) you have to edit gbt_27930_bms.c file, variable g_runtime, see in file comments for meaning.
+Default settings (loaded on startup when no saved settings are present) are defined in `gbt_27930_bms.c`, variable `g_runtime_defaults`; see in-file comments for meaning. To persist changes made at runtime, use `SAVE STG` in the settings screen (see "Settings persistence" above).
 
 ## How to build hardware
 
@@ -203,7 +243,7 @@ Image: ![GBT/DC outlet pinut](images/GBT_20234_(DC)source-wikipedia.svg "GBT/DC 
 
 - Start session via app or charger. You should see a dialog on charger display to connect the cable. Connect the cable and wait for charger to detect it. It should enable 12V output and power up the board. You should see LEDs blinking and then state machine will step into `BHM` state, which means that charger is waiting for BMS handshake. **Do not connect battery for now**.
 
-- After detection, charger will start to send CAN messages and you should see the state machine on lcd display. It should stop at `BRM`, `BCP` or `BRO` state, depending on charger. This means that charger is waiting for battery connection. Outlet will be locked and you can not remove the cable (if you have not removed protection lock hole from it).
+- After detection, charger will start to send CAN messages and you should see the state machine on lcd display. It should stop at `BRM`, `BCP` or `BRO` state, depending on charger. This means that charger is waiting for battery connection. Outlet will be locked and you can not remove the cable (if you have not removed protection lock hole from it). While BRO still reports "not ready", the display shows a blinking `CONNECT BATTERY` prompt with a countdown (`READY IN Ns`, duration set by `BRO_PRE_DELAY_S`, default 5 s). **Connect the battery during this window** — BRO switches to "ready" (`0xAA`) when the countdown expires.
 
 - Connect battery (as fast as possible to prevent timeouts as in real world it will be done by car contactor automatically) and wait for state machine to step into `CHG` state. This means that charging now is in progress. You can monitor demand voltage/current, mode, pack voltage/current and permit charge status on main screen. Also you can change demand voltage/current and mode, and for example reported SOC in parameters screen.
 

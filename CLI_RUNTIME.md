@@ -114,6 +114,7 @@ logic itself.
 | Field name       | Allowed values | Default | Description |
 |------------------|----------------|---------|-------------|
 | `PERMIT_CHARGE`  | 0 or 1         | 1       | Charge‑permission flag sent in BSM byte 7 bits 4‑5. `1` = charging allowed, `0` = charging not permitted. Setting to 0 will cause the BMS to signal the charger to stop. |
+| `BRO_PRE_DELAY_S` | seconds, 0 – 60 | 5      | Duration (in seconds) for which BRO reports `0x00` (BMS not ready) before switching to `0xAA` (BMS ready). Gives the operator time to connect the battery; the display shows a blinking `CONNECT BATTERY` prompt with a countdown during this window. |
 
 ---
 

@@ -117,30 +117,55 @@ static BattInfo g_batt = {
 
 // Runtime parameters
 static GbtRuntime g_runtime = {
-	.demandVoltage_dV = 3931, // Start with demand voltage equal to rated voltage
-	.demandCurrent_dA = -20, // Start with demand current at 2A
+	.demandVoltage_dV = 4080u, // Start with demand voltage equal to rated voltage
+	.demandCurrent_dA = -00, // Start with demand current at 2.0A
 	.mode = 0x01, // Start in CV mode
-	.packVoltage_dV = 3400, // Initial pack voltage in dV, set to 340V, will be updated based on messages received
+	.packVoltage_dV = 2880, // Initial pack voltage in dV, set to 340V, will be updated based on messages received
 	.packCurrent_dA = 0,    // Initial pack current in dA, set to 0A, will be updated based on messages received
-	.tailSwitchVoltage_dV = 3920u, // Volage threshold for tail request in dV, set to 392V (Approx 4.1V per cell in 96s cell pack)
-	.tailSwitchCurrent_dA = 70,    // Current threshold for tail request in dA, set to 7A
+	.tailSwitchVoltage_dV = 9000u, // Volage threshold for tail request in dV, set to 392.0V (Approx 4.1V per cell in 96s cell pack)
+	.tailSwitchCurrent_dA = 00,    // Current threshold for tail request in dA, set to 7A
 	.tailVoltage_dV = 4080u,      // Tail request voltage in dV, set to 408.0V (4.25V per cell in 96s cell pack)
-	.tailCurrent_dA = -70,        // Tail request current in dA, set to -7A
-	.maxCell_mV = 4000, // Dummy max cell voltage reported
+	.tailCurrent_dA = -00,        // Tail request current in dA, set to -7A
+	.maxCell_mV = 3000, // Dummy max cell voltage reported
 	.maxCellGroup = 0, // Dummy max cell group
-	.soc_percent = 50, // Dummy SOC percent (Can be changed in runtime via lcd interface)
+	.soc_percent = 5, // Dummy SOC percent (Can be changed in runtime via lcd interface)
 	.remaining_min = 120, // Dummy remaining time in minutes
 	.maxCellIndex = 1, // Dummy max cell index
-	.tempMax_C = 30, //	Dummy max temperature in C
+	.tempMax_C = 25, //	Dummy max temperature in C
 	.tempMaxIndex = 1, // Dummy max temperature cell index
-	.tempMin_C = 25, // Dummy min temperature in C
+	.tempMin_C = 20, // Dummy min temperature in C
 	.tempMinIndex = 2, // Dummy min temperature cell index
-	.permit_charge = 1 // Start with permit charge true, can be changed in runtime via lcd interface
+	.permit_charge = 1, // Start with permit charge true, can be changed in runtime via lcd interface
+	.bro_pre_delay_s = 5 // Seconds of BRO=0x00 before BRO=0xAA, configurable via lcd interface
+};
+
+static const GbtRuntime g_runtime_defaults = {
+	.demandVoltage_dV = 4080u,
+	.demandCurrent_dA = 0,
+	.mode = 0x01,
+	.packVoltage_dV = 2880,
+	.packCurrent_dA = 0,
+	.tailSwitchVoltage_dV = 9000u,
+	.tailSwitchCurrent_dA = 0,
+	.tailVoltage_dV = 4080u,
+	.tailCurrent_dA = 0,
+	.maxCell_mV = 3000,
+	.maxCellGroup = 0,
+	.soc_percent = 5,
+	.remaining_min = 120,
+	.maxCellIndex = 1,
+	.tempMax_C = 25,
+	.tempMaxIndex = 1,
+	.tempMin_C = 20,
+	.tempMinIndex = 2,
+	.permit_charge = 1,
+	.bro_pre_delay_s = 5
 };
 
 static GbtChargeState g_state = GBT27930_CHARGE_STATE_WAIT_CHM;
 static uint32_t t_last_BHM = 0, t_last_BRM = 0, t_last_BCP = 0, t_last_BRO = 0;
 static uint32_t t_last_BCL = 0, t_last_BCS = 0, t_last_BSM = 0;
+static uint32_t t_bro_phase_start = 0; // Start of the BRO pre-delay window
 static uint32_t t_last_CCS_seen = 0;
 static uint32_t t_last_BST = 0;
 
@@ -255,9 +280,20 @@ static void build_and_send_BCP(void)
 	(void)tp_send_rts_cts(7, PGN_BCP, SA_CHARGER, p, sizeof(p));
 }
 
+static bool bro_ready_now(void)
+{
+	if (g_state != GBT27930_CHARGE_STATE_SEND_BCP && g_state != GBT27930_CHARGE_STATE_SEND_BRO) {
+		return false;
+	}
+	uint32_t elapsed = GetTS() - t_bro_phase_start;
+	return elapsed >= ((uint32_t)g_runtime.bro_pre_delay_s * 1000u);
+}
+
 static void build_and_send_BRO(void)
 {
-	uint8_t p[1] = { 0xAAu };
+	/* Per GB/T 27930: 0x00 = BMS not ready, 0xAA = BMS ready for charging.
+	 * Keep 0x00 for bro_pre_delay_s seconds so the operator can connect the battery. */
+	uint8_t p[1] = { bro_ready_now() ? 0xAAu : 0x00u };
 	CanSendMsg(make_j1939_id(4, PGN_BRO, SA_BMS, SA_CHARGER), p, 1);
 }
 
@@ -464,6 +500,8 @@ static void handle_rx_message(uint32_t id, uint8_t *buf, uint8_t len)
 			} else if (g_state == GBT27930_CHARGE_STATE_SEND_BRM && confirm == 0xAAu) {
 				g_state = GBT27930_CHARGE_STATE_SEND_BCP;
 				t_last_BCP = 0;
+				t_bro_phase_start = GetTS();
+				t_last_BRO = GetTS();
 			}
 		}
 	} else if (pgn == PGN_CML) {
@@ -508,6 +546,7 @@ void SetupCharge(void)
 	t_last_CCS_seen = 0;
 	t_last_BST = 0;
 	last_crm_confirm = 0;
+	t_bro_phase_start = GetTS();
 	g_bst_reason_3511 = 0x00u;
 	g_bst_reason_3512 = 0x0000u;
 	g_bst_reason_3513 = 0x00u;
@@ -616,6 +655,61 @@ void LoopCharge(void)
 	}
 }
 
+bool GbtIsConnectingPhase(void)
+{
+	/* True while BRO must still report 0x00: the operator is connecting the battery */
+	return !bro_ready_now() &&
+	       (g_state == GBT27930_CHARGE_STATE_SEND_BCP || g_state == GBT27930_CHARGE_STATE_SEND_BRO);
+}
+
+uint32_t GbtConnectingRemainingMs(void)
+{
+	if (!GbtIsConnectingPhase()) {
+		return 0u;
+	}
+	uint32_t elapsed = GetTS() - t_bro_phase_start;
+	uint32_t total = (uint32_t)g_runtime.bro_pre_delay_s * 1000u;
+	return (elapsed >= total) ? 0u : (total - elapsed);
+}
+
+void GbtManualStateNext(void)
+{
+	/* Bench-test helper: force-advance the state machine one step */
+	switch (g_state) {
+		case GBT27930_CHARGE_STATE_WAIT_CHM:
+			g_state = GBT27930_CHARGE_STATE_SEND_BHM;
+			t_last_BHM = GetTS();
+			break;
+		case GBT27930_CHARGE_STATE_SEND_BHM:
+			g_state = GBT27930_CHARGE_STATE_SEND_BRM;
+			t_last_BRM = GetTS();
+			break;
+		case GBT27930_CHARGE_STATE_SEND_BRM:
+			g_state = GBT27930_CHARGE_STATE_SEND_BCP;
+			t_last_BCP = GetTS();
+			t_last_BRO = GetTS();
+			t_bro_phase_start = GetTS();
+			break;
+		case GBT27930_CHARGE_STATE_SEND_BCP:
+		case GBT27930_CHARGE_STATE_SEND_BRO:
+			g_state = GBT27930_CHARGE_STATE_CHARGING;
+			t_last_BCL = t_last_BCS = t_last_BSM = 0;
+			t_last_CCS_seen = GetTS();
+			break;
+		case GBT27930_CHARGE_STATE_CHARGING:
+			g_state = GBT27930_CHARGE_STATE_END;
+			g_stop_sequence_active = false;
+			g_bst_sent = false;
+			break;
+		case GBT27930_CHARGE_STATE_END:
+			g_state = GBT27930_CHARGE_STATE_WAIT_CHM;
+			t_last_BHM = 0;
+			break;
+		default:
+			break;
+	}
+}
+
 GbtChargeState GbtGetChargeState(void)
 {
 	return g_state;
@@ -649,6 +743,11 @@ void GbtSetRuntime(const GbtRuntime *in)
 	}
 }
 
+void GbtRestoreDefaults(void)
+{
+	g_runtime = g_runtime_defaults;
+}
+
 int32_t GbtGetRuntimeField(GbtRuntimeField field)
 {
 	switch (field) {
@@ -671,6 +770,7 @@ int32_t GbtGetRuntimeField(GbtRuntimeField field)
 		case GBT27930_RUNTIME_TEMP_MIN_C: return (int32_t)g_runtime.tempMin_C;
 		case GBT27930_RUNTIME_TEMP_MIN_INDEX: return (int32_t)g_runtime.tempMinIndex;
 		case GBT27930_RUNTIME_PERMIT_CHARGE: return (int32_t)g_runtime.permit_charge;
+		case GBT27930_RUNTIME_BRO_PRE_DELAY_S: return (int32_t)g_runtime.bro_pre_delay_s;
 		default: return 0;
 	}
 }
@@ -695,6 +795,7 @@ static const char *field_names[] = {
 	"TEMP_MIN_C",
 	"TEMP_MIN_INDEX",
 	"PERMIT_CHARGE",
+	"BRO_PRE_DELAY_S",
 };
 
 const char *GbtRuntimeFieldName(GbtRuntimeField field)
@@ -809,6 +910,11 @@ void GbtSetRuntimeField(GbtRuntimeField field, int32_t value)
 			break;
 		case GBT27930_RUNTIME_PERMIT_CHARGE:
 			g_runtime.permit_charge = (value != 0) ? 1u : 0u;
+			break;
+		case GBT27930_RUNTIME_BRO_PRE_DELAY_S:
+			if (value < 0) value = 0;
+			if (value > 60) value = 60;
+			g_runtime.bro_pre_delay_s = (uint16_t)value;
 			break;
 		default:
 			break;
