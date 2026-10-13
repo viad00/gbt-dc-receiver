@@ -23,7 +23,7 @@
 #define SETTINGS_FLASH_ADDR   ((uint32_t)0x080E0000u)
 #define SETTINGS_SECTOR       FLASH_SECTOR_11
 #define SETTINGS_MAGIC        ((uint32_t)0x5354534Bu) /* 'KSTS' */
-#define SETTINGS_VERSION      ((uint32_t)1u)
+#define SETTINGS_VERSION      ((uint32_t)2u) /* v2: GbtRuntime gained BRO_WAIT_CONFIRM/BRO_CONFIRM/BRO_READY/WAIT_FOR_CHM/LOCK_BEFORE_START */
 
 typedef struct {
 	uint32_t magic;

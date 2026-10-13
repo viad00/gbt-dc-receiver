@@ -114,7 +114,38 @@ logic itself.
 | Field name       | Allowed values | Default | Description |
 |------------------|----------------|---------|-------------|
 | `PERMIT_CHARGE`  | 0 or 1         | 1       | Charge‑permission flag sent in BSM byte 7 bits 4‑5. `1` = charging allowed, `0` = charging not permitted. Setting to 0 will cause the BMS to signal the charger to stop. |
-| `BRO_PRE_DELAY_S` | seconds, 0 – 60 | 5      | Duration (in seconds) for which BRO reports `0x00` (BMS not ready) before switching to `0xAA` (BMS ready). Gives the operator time to connect the battery; the display shows a blinking `CONNECT BATTERY` prompt with a countdown during this window. |
+| `BRO_PRE_DELAY_S` | seconds, 0 – 60 | 5      | Duration (in seconds) for which BRO reports `0x00` (BMS not ready) before switching to `0xAA` (BMS ready). Only used when `BRO_WAIT_CONFIRM=1`. The display shows a blinking `CONNECT BATTERY` prompt with a countdown during this window. |
+| `BRO_WAIT_CONFIRM` | 0, 1 or 2    | 1       | How BRO is released to `0xAA`. `0` = immediately, no wait. `1` = wait `BRO_PRE_DELAY_S` seconds. `2` = wait until `BRO_CONFIRM` is set to `1` over the UART CLI. |
+| `BRO_CONFIRM`    | 0 or 1         | 0       | Handshake flag for `BRO_WAIT_CONFIRM=2`. Set to `1` (e.g. `RSET BRO_CONFIRM 1`) to release BRO to `0xAA`. Automatically cleared to `0` when a new charge session starts (`SetupCharge`), so each session needs a fresh confirmation. |
+| `BRO_READY`      | 0 or 1         | 0       | Status flag. Set to `1` while BRO reports `0x00` (the waiting/connecting phase) and back to `0` once BRO reports `0xAA`. An external host can poll `RGET BRO_READY` to learn that the BMS has reached the BRO handshake and is waiting for action. |
+| `WAIT_FOR_CHM`   | 0 or 1         | 0       | BHM start policy. `0` = BHM is transmitted right away (current behaviour). `1` = strict GB/T 27930: the board transmits nothing until a CHM message is received, and only then starts sending BHM. |
+| `LOCK_BEFORE_START` | 0 or 1      | 0       | Boot handshake. When saved to flash as `1`, the next boot transmits nothing and waits until the flag is cleared over the UART CLI (`RSET LOCK_BEFORE_START 0`); only then the charge session starts. Setting it to `1` at runtime only takes effect after the next reboot (the value is sampled at session start). Clearing it with `GbtRestoreDefaults` (LCD) also releases the lock. |
+
+#### Boot-lock handshake example
+
+```text
+... board boots, LOCK_BEFORE_START=1 loaded from flash, nothing is transmitted ...
+RGET LOCK_BEFORE_START
+LOCK_BEFORE_START=1
+RSET LOCK_BEFORE_START 0
+SET LOCK_BEFORE_START=0
+... charge session starts (BHM, or silence until CHM if WAIT_FOR_CHM=1) ...
+```
+
+#### BRO handshake example (`BRO_WAIT_CONFIRM=2`)
+
+```text
+RSET BRO_WAIT_CONFIRM 2
+SET BRO_WAIT_CONFIRM=2
+... charge session starts, BMS reaches BRO phase ...
+RGET BRO_READY
+BRO_READY=1
+RSET BRO_CONFIRM 1
+SET BRO_CONFIRM=1
+... BRO now reports 0xAA, charger proceeds ...
+RGET BRO_READY
+BRO_READY=0
+```
 
 ---
 

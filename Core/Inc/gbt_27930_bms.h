@@ -39,6 +39,11 @@ typedef struct {
 	uint8_t  tempMinIndex;
 	uint8_t  permit_charge;
 	uint16_t bro_pre_delay_s; /* seconds BRO=0x00 is sent before 0xAA */
+	uint8_t  bro_wait_confirm; /* BRO release mode, see GBT27930_BRO_WAIT_* */
+	uint8_t  bro_confirm;      /* UART CLI handshake: 1 releases BRO=0xAA in BRO_WAIT_CONFIRM mode */
+	uint8_t  bro_ready;        /* status: 1 while BRO reports 0x00 (waiting phase) */
+	uint8_t  wait_for_chm;     /* 1 = transmit nothing until CHM arrives, BHM starts after CHM (strict GB/T 27930) */
+	uint8_t  lock_before_start; /* 1 = armed in flash: stay silent at boot until cleared over UART CLI */
 } GbtRuntime;
 
 typedef enum {
@@ -62,8 +67,18 @@ typedef enum {
 	GBT27930_RUNTIME_TEMP_MIN_INDEX,
 	GBT27930_RUNTIME_PERMIT_CHARGE,
 	GBT27930_RUNTIME_BRO_PRE_DELAY_S,
+	GBT27930_RUNTIME_BRO_WAIT_CONFIRM,
+	GBT27930_RUNTIME_BRO_CONFIRM,
+	GBT27930_RUNTIME_BRO_READY,
+	GBT27930_RUNTIME_WAIT_FOR_CHM,
+	GBT27930_RUNTIME_LOCK_BEFORE_START,
 	GBT27930_RUNTIME_FIELD_COUNT
 } GbtRuntimeField;
+
+/* BRO release modes (GbtRuntime.bro_wait_confirm) */
+#define GBT27930_BRO_WAIT_NONE     0u /* send BRO=0xAA immediately */
+#define GBT27930_BRO_WAIT_DELAY    1u /* send BRO=0x00 for bro_pre_delay_s, then 0xAA (default) */
+#define GBT27930_BRO_WAIT_CONFIRM  2u /* send BRO=0x00 until BRO_CONFIRM is set via UART CLI, then 0xAA */
 
 /* GB/T 27930 stop-charge reason values
  * 2-bit subfields: 0x00 = normal/not reached, 0x01 = asserted/reached,

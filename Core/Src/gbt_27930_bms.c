@@ -120,13 +120,13 @@ static GbtRuntime g_runtime = {
 	.demandVoltage_dV = 4080u, // Start with demand voltage equal to rated voltage
 	.demandCurrent_dA = -00, // Start with demand current at 2.0A
 	.mode = 0x01, // Start in CV mode
-	.packVoltage_dV = 2880, // Initial pack voltage in dV, set to 340V, will be updated based on messages received
+	.packVoltage_dV = 3500, // Initial pack voltage in dV, set to 350V, will be updated based on messages received
 	.packCurrent_dA = 0,    // Initial pack current in dA, set to 0A, will be updated based on messages received
 	.tailSwitchVoltage_dV = 9000u, // Volage threshold for tail request in dV, set to 392.0V (Approx 4.1V per cell in 96s cell pack)
 	.tailSwitchCurrent_dA = 00,    // Current threshold for tail request in dA, set to 7A
 	.tailVoltage_dV = 4080u,      // Tail request voltage in dV, set to 408.0V (4.25V per cell in 96s cell pack)
 	.tailCurrent_dA = -00,        // Tail request current in dA, set to -7A
-	.maxCell_mV = 3000, // Dummy max cell voltage reported
+	.maxCell_mV = 3500, // Dummy max cell voltage reported
 	.maxCellGroup = 0, // Dummy max cell group
 	.soc_percent = 5, // Dummy SOC percent (Can be changed in runtime via lcd interface)
 	.remaining_min = 120, // Dummy remaining time in minutes
@@ -136,20 +136,25 @@ static GbtRuntime g_runtime = {
 	.tempMin_C = 20, // Dummy min temperature in C
 	.tempMinIndex = 2, // Dummy min temperature cell index
 	.permit_charge = 1, // Start with permit charge true, can be changed in runtime via lcd interface
-	.bro_pre_delay_s = 5 // Seconds of BRO=0x00 before BRO=0xAA, configurable via lcd interface
+	.bro_pre_delay_s = 5, // Seconds of BRO=0x00 before BRO=0xAA, configurable via lcd interface
+	.bro_wait_confirm = GBT27930_BRO_WAIT_DELAY, // Default: delay bro_pre_delay_s before BRO=0xAA
+	.bro_confirm = 0, // UART CLI handshake flag, auto-cleared when a new charge session starts
+	.bro_ready = 0, // Status: 1 while BRO reports 0x00
+	.wait_for_chm = 0, // 0 = BHM from start (current behavior), 1 = silence until CHM (strict GB/T 27930)
+	.lock_before_start = 0 // 1 = armed in flash: boot waits for UART CLI handshake before any TX
 };
 
 static const GbtRuntime g_runtime_defaults = {
 	.demandVoltage_dV = 4080u,
 	.demandCurrent_dA = 0,
 	.mode = 0x01,
-	.packVoltage_dV = 2880,
+	.packVoltage_dV = 3500,
 	.packCurrent_dA = 0,
 	.tailSwitchVoltage_dV = 9000u,
 	.tailSwitchCurrent_dA = 0,
 	.tailVoltage_dV = 4080u,
 	.tailCurrent_dA = 0,
-	.maxCell_mV = 3000,
+	.maxCell_mV = 3500,
 	.maxCellGroup = 0,
 	.soc_percent = 5,
 	.remaining_min = 120,
@@ -159,7 +164,12 @@ static const GbtRuntime g_runtime_defaults = {
 	.tempMin_C = 20,
 	.tempMinIndex = 2,
 	.permit_charge = 1,
-	.bro_pre_delay_s = 5
+	.bro_pre_delay_s = 5,
+	.bro_wait_confirm = GBT27930_BRO_WAIT_DELAY,
+	.bro_confirm = 0,
+	.bro_ready = 0,
+	.wait_for_chm = 0,
+	.lock_before_start = 0
 };
 
 static GbtChargeState g_state = GBT27930_CHARGE_STATE_WAIT_CHM;
@@ -176,6 +186,8 @@ static uint8_t g_bst_reason_3513 = 0x00u;
 static bool g_stop_sequence_active = false;
 static bool g_bst_sent = false;
 static bool g_tail_request_applied = false;
+static bool g_cml_seen = false; /* BRO may only start after CML is received (Table D.1) */
+static bool g_start_locked = false; /* boot handshake: armed from flash, unlock via UART CLI */
 
 static void maybe_apply_tail_request(void)
 {
@@ -282,18 +294,33 @@ static void build_and_send_BCP(void)
 
 static bool bro_ready_now(void)
 {
+	if (!g_cml_seen) {
+		return false;
+	}
 	if (g_state != GBT27930_CHARGE_STATE_SEND_BCP && g_state != GBT27930_CHARGE_STATE_SEND_BRO) {
 		return false;
 	}
-	uint32_t elapsed = GetTS() - t_bro_phase_start;
-	return elapsed >= ((uint32_t)g_runtime.bro_pre_delay_s * 1000u);
+	switch (g_runtime.bro_wait_confirm) {
+		case GBT27930_BRO_WAIT_NONE:
+			return true;
+		case GBT27930_BRO_WAIT_CONFIRM:
+			return g_runtime.bro_confirm != 0u;
+		case GBT27930_BRO_WAIT_DELAY:
+		default: {
+			uint32_t elapsed = GetTS() - t_bro_phase_start;
+			return elapsed >= ((uint32_t)g_runtime.bro_pre_delay_s * 1000u);
+		}
+	}
 }
 
 static void build_and_send_BRO(void)
 {
 	/* Per GB/T 27930: 0x00 = BMS not ready, 0xAA = BMS ready for charging.
-	 * Keep 0x00 for bro_pre_delay_s seconds so the operator can connect the battery. */
-	uint8_t p[1] = { bro_ready_now() ? 0xAAu : 0x00u };
+	 * While BRO reports 0x00 the runtime flag BRO_READY reads 1 so an
+	 * external host can watch the handshake over the UART CLI. */
+	uint8_t ready = bro_ready_now() ? 0xAAu : 0x00u;
+	g_runtime.bro_ready = (ready == 0x00u) ? 1u : 0u;
+	uint8_t p[1] = { ready };
 	CanSendMsg(make_j1939_id(4, PGN_BRO, SA_BMS, SA_CHARGER), p, 1);
 }
 
@@ -500,13 +527,20 @@ static void handle_rx_message(uint32_t id, uint8_t *buf, uint8_t len)
 			} else if (g_state == GBT27930_CHARGE_STATE_SEND_BRM && confirm == 0xAAu) {
 				g_state = GBT27930_CHARGE_STATE_SEND_BCP;
 				t_last_BCP = 0;
-				t_bro_phase_start = GetTS();
-				t_last_BRO = GetTS();
+				/* BRO window starts when CML arrives (see PGN_CML handler) */
 			}
 		}
 	} else if (pgn == PGN_CML) {
 		if (g_state == GBT27930_CHARGE_STATE_SEND_BCP) {
 			t_last_BCP = 0;
+		}
+		/* Per Table D.1: BRO transmission starts only after CML is received.
+		 * The BRO pre-delay window (operator connecting the battery) also
+		 * starts here. */
+		if (!g_cml_seen) {
+			g_cml_seen = true;
+			t_bro_phase_start = GetTS();
+			t_last_BRO = GetTS();
 		}
 	} else if (pgn == PGN_CRO) {
 		if (len >= 1 && buf[0] == 0xAAu) {
@@ -547,14 +581,30 @@ void SetupCharge(void)
 	t_last_BST = 0;
 	last_crm_confirm = 0;
 	t_bro_phase_start = GetTS();
+	g_runtime.bro_confirm = 0u; /* each session in BRO_WAIT_CONFIRM mode needs a fresh UART confirmation */
+	g_runtime.bro_ready = 0u;
 	g_bst_reason_3511 = 0x00u;
 	g_bst_reason_3512 = 0x0000u;
 	g_bst_reason_3513 = 0x00u;
 	g_stop_sequence_active = false;
 	g_bst_sent = false;
 	g_tail_request_applied = false;
-	build_and_send_BHM();
-	t_last_BHM = GetTS();
+	g_cml_seen = false;
+	if (g_runtime.lock_before_start != 0u) {
+		/* Boot handshake: LOCK_BEFORE_START is armed in flash. Stay completely
+		 * silent until it is cleared over the UART CLI (LoopCharge releases
+		 * the lock and restarts the session). */
+		g_start_locked = true;
+		return;
+	}
+	g_start_locked = false;
+	if (g_runtime.wait_for_chm == 0u) {
+		build_and_send_BHM();
+		t_last_BHM = GetTS();
+	} else {
+		/* Strict GB/T 27930: BHM transmission starts only after CHM arrives */
+		t_last_BHM = 0;
+	}
 }
 
 void StopCharge(uint8_t stop_reason_3511, uint16_t stop_reason_3512, uint8_t stop_reason_3513)
@@ -578,6 +628,19 @@ void LoopCharge(void)
 	uint32_t now = GetTS();
 	uint32_t id; uint8_t buf[8]; uint8_t len;
 
+	if (g_start_locked) {
+		/* Boot handshake pending: discard stale CAN RX and transmit nothing.
+		 * The UART CLI keeps running so LOCK_BEFORE_START can be cleared. */
+		while (CanRingBufferPop(&id, buf, &len)) {
+		}
+		if (g_runtime.lock_before_start != 0u) {
+			return;
+		}
+		g_start_locked = false;
+		SetupCharge(); /* handshake complete - start the session now */
+		now = GetTS();
+	}
+
 	while (CanRingBufferPop(&id, buf, &len)) {
 		LED(1);
 		handle_rx_message(id, buf, len);
@@ -585,7 +648,7 @@ void LoopCharge(void)
 
 	switch (g_state) {
 		case GBT27930_CHARGE_STATE_WAIT_CHM:
-			if ((now - t_last_BHM) >= PERIOD_BHM_MS) {
+			if (g_runtime.wait_for_chm == 0u && ((now - t_last_BHM) >= PERIOD_BHM_MS)) {
 				build_and_send_BHM();
 				t_last_BHM = now;
 			}
@@ -609,7 +672,7 @@ void LoopCharge(void)
 				build_and_send_BCP();
 				t_last_BCP = now;
 			}
-			if ((now - t_last_BRO) >= PERIOD_BRO_MS) {
+			if (g_cml_seen && ((now - t_last_BRO) >= PERIOD_BRO_MS)) {
 				build_and_send_BRO();
 				t_last_BRO = now;
 			}
@@ -667,6 +730,9 @@ uint32_t GbtConnectingRemainingMs(void)
 	if (!GbtIsConnectingPhase()) {
 		return 0u;
 	}
+	if (g_runtime.bro_wait_confirm != GBT27930_BRO_WAIT_DELAY) {
+		return 0u; /* no timed window in immediate/confirm modes */
+	}
 	uint32_t elapsed = GetTS() - t_bro_phase_start;
 	uint32_t total = (uint32_t)g_runtime.bro_pre_delay_s * 1000u;
 	return (elapsed >= total) ? 0u : (total - elapsed);
@@ -689,6 +755,7 @@ void GbtManualStateNext(void)
 			t_last_BCP = GetTS();
 			t_last_BRO = GetTS();
 			t_bro_phase_start = GetTS();
+			g_cml_seen = true; /* manual bench mode: skip CML wait */
 			break;
 		case GBT27930_CHARGE_STATE_SEND_BCP:
 		case GBT27930_CHARGE_STATE_SEND_BRO:
@@ -771,6 +838,11 @@ int32_t GbtGetRuntimeField(GbtRuntimeField field)
 		case GBT27930_RUNTIME_TEMP_MIN_INDEX: return (int32_t)g_runtime.tempMinIndex;
 		case GBT27930_RUNTIME_PERMIT_CHARGE: return (int32_t)g_runtime.permit_charge;
 		case GBT27930_RUNTIME_BRO_PRE_DELAY_S: return (int32_t)g_runtime.bro_pre_delay_s;
+		case GBT27930_RUNTIME_BRO_WAIT_CONFIRM: return (int32_t)g_runtime.bro_wait_confirm;
+		case GBT27930_RUNTIME_BRO_CONFIRM: return (int32_t)g_runtime.bro_confirm;
+		case GBT27930_RUNTIME_BRO_READY: return (int32_t)g_runtime.bro_ready;
+		case GBT27930_RUNTIME_WAIT_FOR_CHM: return (int32_t)g_runtime.wait_for_chm;
+		case GBT27930_RUNTIME_LOCK_BEFORE_START: return (int32_t)g_runtime.lock_before_start;
 		default: return 0;
 	}
 }
@@ -796,6 +868,11 @@ static const char *field_names[] = {
 	"TEMP_MIN_INDEX",
 	"PERMIT_CHARGE",
 	"BRO_PRE_DELAY_S",
+	"BRO_WAIT_CONFIRM",
+	"BRO_CONFIRM",
+	"BRO_READY",
+	"WAIT_FOR_CHM",
+	"LOCK_BEFORE_START",
 };
 
 const char *GbtRuntimeFieldName(GbtRuntimeField field)
@@ -915,6 +992,23 @@ void GbtSetRuntimeField(GbtRuntimeField field, int32_t value)
 			if (value < 0) value = 0;
 			if (value > 60) value = 60;
 			g_runtime.bro_pre_delay_s = (uint16_t)value;
+			break;
+		case GBT27930_RUNTIME_BRO_WAIT_CONFIRM:
+			if (value < 0) value = 0;
+			if (value > 2) value = 2;
+			g_runtime.bro_wait_confirm = (uint8_t)value;
+			break;
+		case GBT27930_RUNTIME_BRO_CONFIRM:
+			g_runtime.bro_confirm = (value != 0) ? 1u : 0u;
+			break;
+		case GBT27930_RUNTIME_BRO_READY:
+			g_runtime.bro_ready = (value != 0) ? 1u : 0u;
+			break;
+		case GBT27930_RUNTIME_WAIT_FOR_CHM:
+			g_runtime.wait_for_chm = (value != 0) ? 1u : 0u;
+			break;
+		case GBT27930_RUNTIME_LOCK_BEFORE_START:
+			g_runtime.lock_before_start = (value != 0) ? 1u : 0u;
 			break;
 		default:
 			break;
