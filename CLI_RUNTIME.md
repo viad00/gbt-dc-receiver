@@ -3,6 +3,11 @@
 All commands are sent over **UART4** (`PA0` TX, `PA1` RX) at **115200 8N1**.
 Each command must be terminated with `\n` or `\r`.
 
+On the Linux host program the identical commands are transported over MQTT
+instead of UART: publish a command to `<base>/cmd` (default base topic `gbt`)
+and read the response from `<base>/resp`. See the README section
+"Linux host program (SocketCAN + MQTT)".
+
 ---
 
 ## Commands
@@ -58,6 +63,32 @@ If the arguments are malformed the device replies `USAGE: RSET <FIELD> <value>`.
 
 > **Note:** Field names are **case-sensitive** and must be entered exactly as
 > shown in the table (all uppercase, underscores).
+
+### `SAVE`
+
+Persists the current runtime fields to the settings store (flash sector on the
+MCU, settings file on the Linux host).  Values changed with `RSET` live in RAM
+until this command runs.  On success:
+
+```text
+SETTINGS SAVED
+```
+
+On failure (e.g. flash write error) the device replies `SAVE FAILED`.
+
+### `DCAN [ON|OFF]`
+
+Queries or toggles the raw CAN frame trace.  With no argument the device
+replies `DEBUG CAN: ON` or `DEBUG CAN: OFF`:
+
+```text
+DCAN ON
+DEBUG CAN: ON
+```
+
+While enabled, every CAN frame is emitted as a CSV line
+(`<ms>,<id:08X>,true,<Rx|Tx>,0,<dlc>,<d0..d7>`) over the console transport
+(UART4 on the MCU, `<base>/can` on the Linux host).
 
 ---
 

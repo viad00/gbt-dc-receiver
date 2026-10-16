@@ -18,30 +18,9 @@
 char TmpString[1024] = {0};
 int TmpStringLen = 0;
 
-typedef struct {
-	uint32_t buffer_id[256];
-	uint8_t buffer_len[256];
-	uint64_t buffer_data[256];
-	uint8_t RecvPos;
-	uint8_t SendPos;
-} CanRingBuff;
-
-static CanRingBuff ring_buffer;
-static bool debug_can_enabled = false;
-
-void DebugCan_SetEnabled(bool enabled)
-{
-	debug_can_enabled = enabled;
-}
-
-bool DebugCan_IsEnabled(void)
-{
-	return debug_can_enabled;
-}
-
 static void DebugSendCanMsg(uint32_t id, uint8_t *buf, uint8_t len)
 {
-	if (!debug_can_enabled) return;
+	if (!DebugCan_IsEnabled()) return;
 
 	memset(TmpString, 0, sizeof(TmpString));
 	TmpStringLen = snprintf(TmpString, sizeof(TmpString),
@@ -53,24 +32,12 @@ static void DebugSendCanMsg(uint32_t id, uint8_t *buf, uint8_t len)
 	HAL_UART_Transmit_DMA(&huart4, (uint8_t *)TmpString, (uint16_t)TmpStringLen);
 }
 
-static void can_ring_buffer_push(uint32_t id, uint8_t *buf, uint8_t len)
+/* Strong implementation of the shared observer hook (weak default in
+ * can_buffer.c): flash log + UART debug trace for every RX/TX frame. */
+void CanFrameObserve(uint32_t id, uint8_t *buf, uint8_t len, bool is_tx)
 {
-	memcpy(&(ring_buffer.buffer_id[ring_buffer.RecvPos]), &id, sizeof(id));
-	memcpy(&(ring_buffer.buffer_len[ring_buffer.RecvPos]), &len, sizeof(len));
-	memcpy(&(ring_buffer.buffer_data[ring_buffer.RecvPos]), buf, len);
-	ring_buffer.RecvPos++;
-}
-
-uint8_t CanRingBufferPop(uint32_t *id, uint8_t *buf, uint8_t *len)
-{
-	if (ring_buffer.SendPos == ring_buffer.RecvPos) return 0;
-	memcpy(id, &(ring_buffer.buffer_id[ring_buffer.SendPos]), sizeof(uint32_t));
-	memcpy(len, &(ring_buffer.buffer_len[ring_buffer.SendPos]), sizeof(uint8_t));
-	memcpy(buf, &(ring_buffer.buffer_data[ring_buffer.SendPos]), sizeof(uint64_t));
-	ring_buffer.SendPos++;
-	FlashLog_Write(*id, buf, *len, 0);
-	DebugSendCanMsg(*id, buf, *len);
-	return 1;
+	FlashLog_Write(id, buf, len, is_tx);
+	DebugSendCanMsg(id, buf, len);
 }
 
 void CanSendMsg(uint32_t id, uint8_t *buf, uint8_t len)
@@ -85,8 +52,7 @@ void CanSendMsg(uint32_t id, uint8_t *buf, uint8_t len)
 
 		uint32_t mailBoxNum = 0;
 		HAL_CAN_AddTxMessage(&hcan1, &msgHeader, buf, &mailBoxNum);
-		FlashLog_Write(id, buf, len, 1);
-		DebugSendCanMsg(id, buf, len);
+		CanFrameObserve(id, buf, len, true);
 	}
 }
 
@@ -103,7 +69,7 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 	} else {
 		msgId = msgHeader.StdId;
 	}
-	can_ring_buffer_push(msgId, msgData, msgHeader.DLC);
+	CanRingBufferPush(msgId, msgData, msgHeader.DLC);
 }
 
 void CanInit(void)

@@ -12,6 +12,8 @@ Key behaviors include:
 - CAN1 transmit/receive via STM32 HAL
 - User interface support for runtime parameter adjustment
 - Flash logging support for diagnostics
+- Linux host program (`linux/`) that runs the same GB/T 27930 files over
+  SocketCAN with an MQTT console instead of the UART CLI
 
 ## Prerequisites
 
@@ -19,18 +21,25 @@ Key behaviors include:
 - STM32F4 HAL drivers (included under `Drivers/STM32F4xx_HAL_Driver`)
 - ST-LINK or compatible SWD programmer/debugger
 - Python 3 for the `flash_dump_to_csv.py` utility
+- libmosquitto (only for the Linux host build: `pacman -S mosquitto` or
+  `apt install libmosquitto-dev`)
 
 ## Repository structure
 
 - `Core/Inc/` - project headers and application interface declarations
 - `Core/Src/` - application source files
   - `main.c` - startup and peripheral initialization
-  - `gbt_27930_bms.c` - GB/T 27930 state machine and CAN helper logic
+  - `gbt_27930_bms.c` - GB/T 27930 state machine (hardware independent, shared with the Linux build)
+  - `gbt_cli.c` - portable runtime CLI parser (UART on the MCU, MQTT on Linux)
+  - `can_buffer.c` - shared CAN RX ring buffer and debug trace toggle
+  - `settings_store.c` - persistent settings page layout + validation (shared)
+  - `settings_nvm_stm32.c` - settings NVM backend: dedicated flash sector
   - `display_ui.c` - UI handling and runtime parameter adjustment
-  - `settings_store.c` - persistent settings storage in a dedicated flash sector
-  - `can.c` - CAN transmit/receive helpers
-  - `flash_writer.c` - flash logging support
-  - `helpers.c` - common utilities
+  - `can.c` - STM32 bxCAN transmit/receive transport
+  - `flash_writer.c` - flash logging support + UART CLI front end
+  - `helpers.c` - common utilities (tick/delay/LED)
+- `linux/` - Linux host program (SocketCAN + MQTT) that builds the same
+  `Core/Src` protocol files with host-side hardware backends
 - `Drivers/` - STM32 HAL and CMSIS device support files
 - `Debug/` - build artifacts and debug output from STM32CubeIDE
 - `flash_dump_to_csv.py` - utility script to convert raw flash dump output to CSV
@@ -61,6 +70,8 @@ Connect a serial terminal to `UART4` (`PA0` TX, `PA1` RX) and send commands term
 - `RGET <FIELD>` — reads a single field (e.g. `RGET SOC_PERCENT`).
 - `RSET <FIELD> <value>` — writes a value to a field, clamped to allowed range (e.g. `RSET DEMAND_CURRENT 100`).
 - `STATE` — prints the current charge state (`WAIT`, `BHM`, `BRM`, `BCP`, `BRO`, `CHG`, `END`).
+- `SAVE` — persists the current runtime fields to the settings store (flash sector on the MCU, file on Linux).
+- `DCAN [ON|OFF]` — queries/toggles the raw CAN frame trace.
 
 > **See [CLI_RUNTIME.md](CLI_RUNTIME.md) for the full field reference, units, allowed ranges, and examples.**
 
@@ -82,6 +93,75 @@ If you have a raw flash dump of chip, use `flash_dump_to_csv.py` to dump log seq
 ```bash
 python3 flash_dump_to_csv.py stm_dump.bin --out-dir csv_out
 ```
+
+## Linux host program (SocketCAN + MQTT)
+
+The `linux/` directory builds the same GB/T 27930 sources the MCU uses
+(`Core/Src/gbt_27930_bms.c`, `gbt_cli.c`, `can_buffer.c`, `settings_store.c`)
+as a native Linux program. Only the hardware halves differ:
+
+| Concern       | MCU                      | Linux host                      |
+|---------------|--------------------------|---------------------------------|
+| CAN transport | `Core/Src/can.c` (bxCAN) | `linux/can_socketcan.c` (SocketCAN) or `linux/can_socketcand.c` (socketcand TCP tunnel) |
+| Console       | `flash_writer.c` (UART4) | `linux/mqtt_cli.c` (MQTT)       |
+| Time / LED    | `Core/Src/helpers.c`     | `linux/helpers_linux.c`         |
+| Settings NVM  | `settings_nvm_stm32.c` (flash sector) | `linux/settings_nvm_file.c` (file) |
+
+The CAN backend is selected by the `--if` value: a plain name (`vcan0`,
+`can0`, ...) uses the local SocketCAN interface, while a host (`192.168.10.2`,
+`localhost`, `host:port`) connects to a [socketcand](https://github.com/linux-can/socketcand)
+daemon on the network and opens the bus named by `--bus` (protocol: `< open >`,
+`< rawmode >`, `< send >`/`< frame >` from the socketcand doc/protocol.md).
+The connection is retried automatically every 2 s and re-established after
+socketcand restarts.
+
+### Build
+
+```bash
+cd linux
+make
+```
+
+Produces `linux/build/gbt-linux`. Requires `libmosquitto`.
+
+### Run
+
+```bash
+# test bus (or use a real canX interface)
+sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0
+
+# MQTT broker (any broker works; mosquitto for example)
+mosquitto -p 1883
+
+# local SocketCAN interface
+./build/gbt-linux --if vcan0 --host 127.0.0.1 --settings gbt_settings.bin
+
+# or through a socketcand daemon exposing vcan0 (remote CAN bus over TCP)
+socketcand -i vcan0
+./build/gbt-linux --if 127.0.0.1 --bus vcan0 --host 127.0.0.1
+```
+
+Options: `--if <spec>` (SocketCAN interface or socketcand `host[:port]`),
+`--bus` (bus name on socketcand, default `can0`), `--host`, `--port`, `--user`,
+`--pass`, `--topic` (base topic, default `gbt`), `--client-id`, `--settings`.
+
+### MQTT topics
+
+| Topic         | Direction | Payload |
+|---------------|-----------|---------|
+| `<base>/cmd`  | in        | one or more newline-separated CLI commands (same syntax as the UART CLI) |
+| `<base>/resp` | out       | response text of the last command |
+| `<base>/state`| out       | retained charge state, e.g. `STATE=CHG` (published on change and every 5 s) |
+| `<base>/can`  | out       | raw CAN trace lines while `DCAN ON` is active |
+
+```bash
+mosquitto_pub -t gbt/cmd -m "STATE"
+mosquitto_pub -t gbt/cmd -m "RSET SOC_PERCENT 60"
+mosquitto_sub -t 'gbt/#' -v
+```
+
+Settings changed with `RSET` live in RAM; send `SAVE` to persist them (the
+file named by `--settings`, restored automatically on the next start).
 
 ## Pinout
 

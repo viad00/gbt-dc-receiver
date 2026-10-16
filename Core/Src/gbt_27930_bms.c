@@ -140,8 +140,8 @@ static GbtRuntime g_runtime = {
 	.bro_wait_confirm = GBT27930_BRO_WAIT_DELAY, // Default: delay bro_pre_delay_s before BRO=0xAA
 	.bro_confirm = 0, // UART CLI handshake flag, auto-cleared when a new charge session starts
 	.bro_ready = 0, // Status: 1 while BRO reports 0x00
-	.wait_for_chm = 0, // 0 = BHM from start (current behavior), 1 = silence until CHM (strict GB/T 27930)
-	.lock_before_start = 0 // 1 = armed in flash: boot waits for UART CLI handshake before any TX
+	.wait_for_chm = 1, // 0 = BHM from start (current behavior), 1 = silence until CHM (strict GB/T 27930)
+	.lock_before_start = 1 // 1 = armed in flash: boot waits for UART CLI handshake before any TX
 };
 
 static const GbtRuntime g_runtime_defaults = {
@@ -168,8 +168,8 @@ static const GbtRuntime g_runtime_defaults = {
 	.bro_wait_confirm = GBT27930_BRO_WAIT_DELAY,
 	.bro_confirm = 0,
 	.bro_ready = 0,
-	.wait_for_chm = 0,
-	.lock_before_start = 0
+	.wait_for_chm = 1,
+	.lock_before_start = 1
 };
 
 static GbtChargeState g_state = GBT27930_CHARGE_STATE_WAIT_CHM;

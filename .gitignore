@@ -42,3 +42,14 @@ __pycache__/
 # Ignore binary
 *.bin
 *.diff
+
+# Ignore logs
+*.csv
+
+# Untracked files
+.agents/
+.github/
+768427117-GBT-27930-2015.pdf.txt
+GBT+18487.1-2023.pdf.txt
+AGENTS.md
+skills-lock.json
