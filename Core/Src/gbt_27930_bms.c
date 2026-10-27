@@ -449,6 +449,14 @@ static int tp_send_rts_cts(uint8_t prio, uint32_t pgn, uint8_t dest, const uint8
 
 		uint8_t to_send = allowed_packets;
 		if (to_send == 0) {
+			/* CTS(0) = "wait": still bounded by the overall timeout */
+			if ((GetTS() - start_ts) > TP_OVERALL_TIMEOUT_MS) {
+				uint8_t abort[8]; memset(abort, 0xFF, sizeof(abort));
+				abort[0] = TP_CM_ABORT; abort[1] = 0x03;
+				put_u24le(&abort[5], pgn);
+				CanSendMsg(id_cm, abort, 8);
+				return -1;
+			}
 			continue;
 		}
 
@@ -582,6 +590,7 @@ void SetupCharge(void)
 	last_crm_confirm = 0;
 	t_bro_phase_start = GetTS();
 	g_runtime.bro_confirm = 0u; /* each session in BRO_WAIT_CONFIRM mode needs a fresh UART confirmation */
+	g_runtime.permit_charge = 1u; /* a PERMIT_CHARGE 0 stop ends with its session */
 	g_runtime.bro_ready = 0u;
 	g_bst_reason_3511 = 0x00u;
 	g_bst_reason_3512 = 0x0000u;

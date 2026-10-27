@@ -259,7 +259,7 @@ No error is reported; the echoed value reflects the clamped result.
 
 - Use `RLIST` first to see all current values before making changes.
 - To **disable** automatic tail request, set `TAIL_SWITCH_VOLTAGE` to its maximum (`10000`).
-- Setting `PERMIT_CHARGE` to `0` will cause the BMS to tell the charger to stop charging on the next BSM frame.
+- Setting `PERMIT_CHARGE` to `0` will cause the BMS to tell the charger to stop charging on the next BSM frame. It goes back to `1` when the next session starts (`SetupCharge`).
 - `DEMAND_VOLTAGE` and `DEMAND_CURRENT` can be changed freely during a charge session to steer the charger in real time.
 - The `PACK_VOLTAGE` and `PACK_CURRENT` fields are **overwritten** by incoming charger CCS messages during an active charge session, so setting them via CLI only takes effect before charging starts.
 - The `MODE` field accepts only `1` (CV) or `2` (CC); any other value defaults to `1`.
