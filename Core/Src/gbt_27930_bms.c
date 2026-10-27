@@ -560,10 +560,10 @@ static void handle_rx_message(uint32_t id, uint8_t *buf, uint8_t len)
 				g_runtime.packCurrent_dA = iout_dA;
 			}
 			t_last_CCS_seen = GetTS();
-			if (len >= 7) {
-				uint8_t permit_bits = buf[6] & 0x03u;
-				g_runtime.permit_charge = (permit_bits == 0x01u) ? 1u : 0u;
-			}
+			/* CCS byte 7 is the charger's own pause flag. PERMIT_CHARGE is the
+			 * BMS's request (BSM SPN3096), set by the CLI/host only: copying the
+			 * charger's flag into it overwrote a PERMIT_CHARGE 0 stop request
+			 * within 50 ms, so the BSM never carried it. */
 		}
 	} else if (pgn == PGN_CST) {
 		g_stop_sequence_active = false;
