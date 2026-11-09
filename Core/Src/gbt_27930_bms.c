@@ -20,6 +20,9 @@
 
 static void handle_rx_message(uint32_t id, uint8_t *buf, uint8_t len);
 static int tp_send_rts_cts(uint8_t prio, uint32_t pgn, uint8_t dest, const uint8_t *payload, uint16_t len);
+static void tp_poll(void);
+static void tp_handle_cm(uint32_t id, const uint8_t *buf, uint8_t len);
+static void tp_abort(uint8_t reason);
 
 static void put_u16le(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v & 0xFFu); p[1] = (uint8_t)(v >> 8); }
 static void put_u24le(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v & 0xFFu); p[1] = (uint8_t)((v >> 8) & 0xFFu); p[2] = (uint8_t)((v >> 16) & 0xFFu); }
@@ -34,12 +37,15 @@ static void put_u24le(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v & 0xFFu); p[1
 #define PERIOD_BRM_MS   250u
 #define PERIOD_BRO_MS   250u
 #define PERIOD_BHM_MS   250u
-#define PERIOD_BST_MS   250u
+#define PERIOD_BST_MS   10u          /* GB/T 27930-2015 Table 5: BST repeats every 10 ms */
 
 #define TP_FRAME_GAP_MS 10u          /* GB/T 27930-2015 10.1.4: 10 ms between BRM frames */
 #define TP_CTS_TIMEOUT_MS   100u     /* 33k SWCAN path: this station's CTS arrives in 43-58 ms */
 #define TP_EOM_TIMEOUT_MS   100u     /* same path as the CTS */
 #define TP_OVERALL_TIMEOUT_MS 500u   /* GB/T's outer limit is 5 s; a 33k BRM needs ~160 ms */
+/* shortcut: whole TP payload is copied here, current PGNs are <= 49 B;
+ * grow this if a larger multi-frame PGN is ever needed. */
+#define TP_MAX_PAYLOAD 64u
 
 #define PGN_CHM   0x002600u
 #define PGN_BHM   0x002700u
@@ -253,7 +259,7 @@ static void build_and_send_BHM(void)
 	CanSendMsg(make_j1939_id(6, PGN_BHM, SA_BMS, SA_CHARGER), d, 2);
 }
 
-static void build_and_send_BRM(void)
+static int build_and_send_BRM(void)
 {
 	uint8_t out[49];
 	memset(out, 0xFF, sizeof(out));
@@ -275,10 +281,10 @@ static void build_and_send_BRM(void)
 	memcpy(&out[24], g_batt.VIN, 17);
 	memcpy(&out[41], g_batt.sw_ver, 8);
 	/* send via transport protocol */
-	(void)tp_send_rts_cts(7, PGN_BRM, SA_CHARGER, out, sizeof(out));
+	return tp_send_rts_cts(7, PGN_BRM, SA_CHARGER, out, sizeof(out));
 }
 
-static void build_and_send_BCP(void)
+static int build_and_send_BCP(void)
 {
 	uint8_t p[13];
 	memset(p, 0xFF, sizeof(p));
@@ -289,7 +295,7 @@ static void build_and_send_BCP(void)
 	p[8] = (uint8_t)(50 + 50); // Max battery temperature in C, set to 50C
 	put_u16le(&p[9], (uint16_t)(g_runtime.soc_percent * 10u)); // Remaining energy in 0.1%, set to current SOC * 10
 	put_u16le(&p[11], g_runtime.packVoltage_dV); // Current battery voltage in dV
-	(void)tp_send_rts_cts(7, PGN_BCP, SA_CHARGER, p, sizeof(p));
+	return tp_send_rts_cts(7, PGN_BCP, SA_CHARGER, p, sizeof(p));
 }
 
 static bool bro_ready_now(void)
@@ -333,7 +339,7 @@ static void build_and_send_BCL(void)
 	CanSendMsg(make_j1939_id(6, PGN_BCL, SA_BMS, SA_CHARGER), p, 5);
 }
 
-static void build_and_send_BCS(void)
+static int build_and_send_BCS(void)
 {
 	uint8_t p[9];
 	memset(p, 0xFF, sizeof(p));
@@ -344,7 +350,7 @@ static void build_and_send_BCS(void)
 	put_u16le(&p[4], pack3077);
 	p[6] = (uint8_t)((g_runtime.soc_percent > 100u) ? 100u : g_runtime.soc_percent);
 	put_u16le(&p[7], g_runtime.remaining_min);
-	(void)tp_send_rts_cts(7, PGN_BCS, SA_CHARGER, p, sizeof(p));
+	return tp_send_rts_cts(7, PGN_BCS, SA_CHARGER, p, sizeof(p));
 }
 
 static void build_and_send_BSM(void)
@@ -381,144 +387,172 @@ static void stop_charge_on_timeout(void)
 	}
 }
 
+typedef enum {
+	TP_PHASE_IDLE = 0,
+	TP_PHASE_WAIT_CTS,
+	TP_PHASE_SEND_DT,
+	TP_PHASE_WAIT_EOM,
+} TpPhase;
+
+static struct {
+	TpPhase phase;
+	uint8_t prio;
+	uint8_t dest;
+	uint32_t pgn;
+	uint16_t total_bytes;
+	uint8_t total_packets;
+	uint8_t next_packet;
+	uint8_t allowed_packets;
+	uint8_t payload[TP_MAX_PAYLOAD];
+	uint32_t start_ts;
+	uint32_t phase_ts;
+	uint32_t next_dt_ts;
+} g_tp;
+
+static void tp_send_dt(void)
+{
+	uint8_t dt[8];
+	dt[0] = g_tp.next_packet;
+	uint16_t off = (uint16_t)((g_tp.next_packet - 1u) * 7u);
+	for (uint8_t b = 0; b < 7; ++b) {
+		dt[1 + b] = ((off + b) < g_tp.total_bytes) ? g_tp.payload[off + b] : 0xFFu;
+	}
+	CanSendMsg(make_j1939_id(g_tp.prio, PGN_TP_DT, SA_BMS, g_tp.dest), dt, 8);
+}
+
+static void tp_abort(uint8_t reason)
+{
+	if (g_tp.phase == TP_PHASE_IDLE) return;
+
+	uint8_t abort[8];
+	memset(abort, 0xFF, sizeof(abort));
+	abort[0] = TP_CM_ABORT;
+	abort[1] = reason;
+	put_u24le(&abort[5], g_tp.pgn);
+	CanSendMsg(make_j1939_id(g_tp.prio, PGN_TP_CM, SA_BMS, g_tp.dest), abort, 8);
+	g_tp.phase = TP_PHASE_IDLE;
+}
+
+/* Starts an RTS/CTS transport session. Returns non-zero if another session is
+ * still active; no blocking waits here, tp_poll() sends the DT frames. */
 static int tp_send_rts_cts(uint8_t prio, uint32_t pgn, uint8_t dest, const uint8_t *payload, uint16_t len)
 {
-	if (len == 0 || payload == NULL) return -1;
-	uint16_t total_bytes = len;
-	uint8_t total_packets = (uint8_t)((len + 6u) / 7u);
-	uint8_t max_pack_per_cts = 0xFFu;
+	if (len == 0 || payload == NULL || len > sizeof(g_tp.payload)) return -1;
+	if (g_tp.phase != TP_PHASE_IDLE) return -1;
+
+	memcpy(g_tp.payload, payload, len);
+	g_tp.prio = prio;
+	g_tp.dest = dest;
+	g_tp.pgn = pgn;
+	g_tp.total_bytes = len;
+	g_tp.total_packets = (uint8_t)((len + 6u) / 7u);
+	g_tp.next_packet = 1;
+	g_tp.allowed_packets = 0;
 
 	uint8_t rts[8];
 	rts[0] = TP_CM_RTS;
-	rts[1] = (uint8_t)(total_bytes & 0xFFu);
-	rts[2] = (uint8_t)((total_bytes >> 8) & 0xFFu);
-	rts[3] = total_packets;
-	rts[4] = max_pack_per_cts;
+	rts[1] = (uint8_t)(len & 0xFFu);
+	rts[2] = (uint8_t)((len >> 8) & 0xFFu);
+	rts[3] = g_tp.total_packets;
+	rts[4] = 0xFFu; /* no limit on packets per CTS */
 	rts[5] = (uint8_t)(pgn & 0xFFu);
 	rts[6] = (uint8_t)((pgn >> 8) & 0xFFu);
 	rts[7] = (uint8_t)((pgn >> 16) & 0xFFu);
 
-	uint32_t id_cm = make_j1939_id(prio, PGN_TP_CM, SA_BMS, dest);
-	CanSendMsg(id_cm, rts, 8);
+	g_tp.start_ts = GetTS();
+	g_tp.phase_ts = g_tp.start_ts;
+	g_tp.phase = TP_PHASE_WAIT_CTS;
+	CanSendMsg(make_j1939_id(prio, PGN_TP_CM, SA_BMS, dest), rts, 8);
+	return 0;
+}
 
-	uint8_t packets_sent = 0;
-	uint32_t start_ts = GetTS();
+static void tp_poll(void)
+{
+	uint32_t now;
 
-	while (packets_sent < total_packets) {
-		uint32_t t_wait_start = GetTS();
-		int got_cts = 0;
-		uint8_t allowed_packets = 0;
-		uint8_t first_packet = 0;
+	if (g_tp.phase == TP_PHASE_IDLE) return;
 
-		while ((GetTS() - t_wait_start) < TP_CTS_TIMEOUT_MS) {
-			uint32_t id; uint8_t buf[8]; uint8_t lenb;
-			if (CanRingBufferPop(&id, buf, &lenb)) {
-				uint32_t rx_pgn = decode_pgn_from_id(id);
-				if (rx_pgn == PGN_TP_CM) {
-					uint8_t src = (uint8_t)(id & 0xFFu);
-					if (src == dest) {
-						uint8_t ctrl = buf[0];
-						uint32_t cm_pgn = ((uint32_t)buf[5]) | ((uint32_t)buf[6] << 8) | ((uint32_t)buf[7] << 16);
-						if (cm_pgn == pgn) {
-							if (ctrl == TP_CM_CTS) {
-								allowed_packets = buf[1];
-								first_packet = buf[2];
-								got_cts = 1;
-								break;
-							} else if (ctrl == TP_CM_EOM_ACK) {
-								return 0;
-							} else if (ctrl == TP_CM_ABORT) {
-								return -1;
-							}
-						}
-					}
-				}
-				handle_rx_message(id, buf, lenb);
-			} else {
-				DelayMs(1);
-			}
-		}
-
-		if (!got_cts) {
-			uint8_t abort[8]; memset(abort, 0xFF, sizeof(abort));
-			abort[0] = TP_CM_ABORT; abort[1] = 0x02;
-			put_u24le(&abort[5], pgn);
-			CanSendMsg(id_cm, abort, 8);
-			return -1;
-		}
-
-		uint8_t to_send = allowed_packets;
-		if (to_send == 0) {
-			/* CTS(0) = "wait": still bounded by the overall timeout */
-			if ((GetTS() - start_ts) > TP_OVERALL_TIMEOUT_MS) {
-				uint8_t abort[8]; memset(abort, 0xFF, sizeof(abort));
-				abort[0] = TP_CM_ABORT; abort[1] = 0x03;
-				put_u24le(&abort[5], pgn);
-				CanSendMsg(id_cm, abort, 8);
-				return -1;
-			}
-			continue;
-		}
-
-		uint8_t seq = first_packet;
-		for (uint8_t i = 0; i < to_send && (seq <= total_packets); ++i, ++seq) {
-			uint8_t dt[8];
-			dt[0] = seq;
-			uint16_t off = (uint16_t)((seq - 1u) * 7u);
-			for (uint8_t b = 0; b < 7; ++b) {
-				dt[1 + b] = ((off + b) < total_bytes) ? payload[off + b] : 0xFFu;
-			}
-			CanSendMsg(make_j1939_id(prio, PGN_TP_DT, SA_BMS, dest), dt, 8);
-			++packets_sent;
-			DelayMs(TP_FRAME_GAP_MS);
-			uint32_t poll_start = GetTS();
-			while ((GetTS() - poll_start) < 1u) {
-				uint32_t id2; uint8_t b2[8]; uint8_t l2;
-				if (CanRingBufferPop(&id2, b2, &l2)) {
-					handle_rx_message(id2, b2, l2);
-				} else {
-					break;
-				}
-			}
-		}
-
-		if ((GetTS() - start_ts) > TP_OVERALL_TIMEOUT_MS) {
-			uint8_t abort[8]; memset(abort, 0xFF, sizeof(abort));
-			abort[0] = TP_CM_ABORT; abort[1] = 0x03;
-			put_u24le(&abort[5], pgn);
-			CanSendMsg(id_cm, abort, 8);
-			return -1;
-		}
+	now = GetTS();
+	if ((now - g_tp.start_ts) > TP_OVERALL_TIMEOUT_MS) {
+		tp_abort(0x03);
+		return;
 	}
 
-	uint32_t wait_eom_start = GetTS();
-	while ((GetTS() - wait_eom_start) < TP_EOM_TIMEOUT_MS) {
-		uint32_t id3; uint8_t b3[8]; uint8_t l3;
-		if (CanRingBufferPop(&id3, b3, &l3)) {
-			uint32_t rx_pgn = decode_pgn_from_id(id3);
-			if (rx_pgn == PGN_TP_CM) {
-				uint8_t src = (uint8_t)(id3 & 0xFFu);
-				if (src == dest) {
-					uint8_t ctrl = b3[0];
-					uint32_t cm_pgn = ((uint32_t)b3[5]) | ((uint32_t)b3[6] << 8) | ((uint32_t)b3[7] << 16);
-					if (cm_pgn == pgn) {
-						if (ctrl == TP_CM_EOM_ACK) return 0;
-						if (ctrl == TP_CM_ABORT) return -1;
-					}
-				}
-			}
-			handle_rx_message(id3, b3, l3);
+	switch (g_tp.phase) {
+	case TP_PHASE_WAIT_CTS:
+		if ((now - g_tp.phase_ts) >= TP_CTS_TIMEOUT_MS) {
+			tp_abort(0x02);
+		}
+		break;
+	case TP_PHASE_SEND_DT:
+		if ((int32_t)(now - g_tp.next_dt_ts) < 0) break;
+		tp_send_dt();
+		g_tp.next_packet++;
+		if (g_tp.next_packet > g_tp.total_packets) {
+			g_tp.phase = TP_PHASE_WAIT_EOM;
+			g_tp.phase_ts = now;
+		} else if (--g_tp.allowed_packets == 0u) {
+			g_tp.phase = TP_PHASE_WAIT_CTS;
+			g_tp.phase_ts = now;
 		} else {
-			DelayMs(1);
+			g_tp.next_dt_ts = now + TP_FRAME_GAP_MS;
 		}
+		break;
+	case TP_PHASE_WAIT_EOM:
+		if ((now - g_tp.phase_ts) >= TP_EOM_TIMEOUT_MS) {
+			/* Receiver never acknowledged; drop the session, caller retries. */
+			g_tp.phase = TP_PHASE_IDLE;
+		}
+		break;
+	default:
+		break;
 	}
-	return -1;
+}
+
+static void tp_handle_cm(uint32_t id, const uint8_t *buf, uint8_t len)
+{
+	if (g_tp.phase == TP_PHASE_IDLE || len < 8u) return;
+	if ((uint8_t)(id & 0xFFu) != g_tp.dest) return;
+
+	uint32_t cm_pgn = ((uint32_t)buf[5]) | ((uint32_t)buf[6] << 8) | ((uint32_t)buf[7] << 16);
+	if (cm_pgn != g_tp.pgn) return;
+
+	switch (buf[0]) {
+	case TP_CM_CTS:
+		if (g_tp.phase != TP_PHASE_WAIT_CTS) break;
+		if (buf[2] > g_tp.total_packets) break;
+		g_tp.next_packet = (buf[2] != 0u) ? buf[2] : 1u;
+		g_tp.allowed_packets = buf[1];
+		g_tp.phase_ts = GetTS();
+		if (g_tp.allowed_packets == 0u) {
+			/* CTS(0) = "wait": stay bounded by the overall timeout. */
+			g_tp.phase = TP_PHASE_WAIT_CTS;
+		} else {
+			g_tp.phase = TP_PHASE_SEND_DT;
+			g_tp.next_dt_ts = g_tp.phase_ts;
+		}
+		break;
+	case TP_CM_EOM_ACK:
+		if (g_tp.phase == TP_PHASE_WAIT_EOM) {
+			g_tp.phase = TP_PHASE_IDLE;
+		}
+		break;
+	case TP_CM_ABORT:
+		g_tp.phase = TP_PHASE_IDLE;
+		break;
+	default:
+		break;
+	}
 }
 
 static void handle_rx_message(uint32_t id, uint8_t *buf, uint8_t len)
 {
 	uint32_t pgn = decode_pgn_from_id(id);
-	(void)len;
+
+	if (pgn == PGN_TP_CM) {
+		tp_handle_cm(id, buf, len);
+		return;
+	}
 
 	if (pgn == PGN_CHM) {
 		if (g_state == GBT27930_CHARGE_STATE_WAIT_CHM) {
@@ -539,9 +573,7 @@ static void handle_rx_message(uint32_t id, uint8_t *buf, uint8_t len)
 			}
 		}
 	} else if (pgn == PGN_CML) {
-		if (g_state == GBT27930_CHARGE_STATE_SEND_BCP) {
-			t_last_BCP = 0;
-		}
+		/* BCP keeps its own 500 ms cadence (Table 4); CML only starts BRO. */
 		/* Per Table D.1: BRO transmission starts only after CML is received.
 		 * The BRO pre-delay window (operator connecting the battery) also
 		 * starts here. */
@@ -574,6 +606,7 @@ static void handle_rx_message(uint32_t id, uint8_t *buf, uint8_t len)
 			 * within 50 ms, so the BSM never carried it. */
 		}
 	} else if (pgn == PGN_CST) {
+		tp_abort(0x04);
 		g_stop_sequence_active = false;
 		g_bst_sent = false;
 		g_state = GBT27930_CHARGE_STATE_END;
@@ -592,6 +625,7 @@ void SetupCharge(void)
 	g_runtime.bro_confirm = 0u; /* each session in BRO_WAIT_CONFIRM mode needs a fresh UART confirmation */
 	g_runtime.permit_charge = 1u; /* a PERMIT_CHARGE 0 stop ends with its session */
 	g_runtime.bro_ready = 0u;
+	tp_abort(0x04);
 	g_bst_reason_3511 = 0x00u;
 	g_bst_reason_3512 = 0x0000u;
 	g_bst_reason_3513 = 0x00u;
@@ -618,6 +652,7 @@ void SetupCharge(void)
 
 void StopCharge(uint8_t stop_reason_3511, uint16_t stop_reason_3512, uint8_t stop_reason_3513)
 {
+	tp_abort(0x04);
 	g_bst_reason_3511 = stop_reason_3511;
 	g_bst_reason_3512 = stop_reason_3512;
 	g_bst_reason_3513 = stop_reason_3513;
@@ -655,6 +690,8 @@ void LoopCharge(void)
 		handle_rx_message(id, buf, len);
 	}
 
+	tp_poll();
+
 	switch (g_state) {
 		case GBT27930_CHARGE_STATE_WAIT_CHM:
 			if (g_runtime.wait_for_chm == 0u && ((now - t_last_BHM) >= PERIOD_BHM_MS)) {
@@ -670,15 +707,13 @@ void LoopCharge(void)
 			break;
 		case GBT27930_CHARGE_STATE_SEND_BRM:
 			LED(4);
-			if ((now - t_last_BRM) >= PERIOD_BRM_MS) {
-				build_and_send_BRM();
+			if (((now - t_last_BRM) >= PERIOD_BRM_MS) && (build_and_send_BRM() == 0)) {
 				t_last_BRM = now;
 			}
 			break;
 		case GBT27930_CHARGE_STATE_SEND_BCP:
 			LED(2);
-			if ((now - t_last_BCP) >= PERIOD_BCP_MS) {
-				build_and_send_BCP();
+			if (((now - t_last_BCP) >= PERIOD_BCP_MS) && (build_and_send_BCP() == 0)) {
 				t_last_BCP = now;
 			}
 			if (g_cml_seen && ((now - t_last_BRO) >= PERIOD_BRO_MS)) {
@@ -708,8 +743,7 @@ void LoopCharge(void)
 				build_and_send_BSM();
 				t_last_BSM = now;
 			}
-			if ((now - t_last_BCS) >= PERIOD_BCS_MS) {
-				build_and_send_BCS();
+			if (((now - t_last_BCS) >= PERIOD_BCS_MS) && (build_and_send_BCS() == 0)) {
 				t_last_BCS = now;
 			}
 			break;
