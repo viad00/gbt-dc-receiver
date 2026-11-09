@@ -36,10 +36,10 @@ static void put_u24le(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v & 0xFFu); p[1
 #define PERIOD_BHM_MS   250u
 #define PERIOD_BST_MS   250u
 
-#define TP_FRAME_GAP_MS 1u
-#define TP_CTS_TIMEOUT_MS   25u
-#define TP_EOM_TIMEOUT_MS   25u
-#define TP_OVERALL_TIMEOUT_MS 200u
+#define TP_FRAME_GAP_MS 10u          /* GB/T 27930-2015 10.1.4: 10 ms between BRM frames */
+#define TP_CTS_TIMEOUT_MS   100u     /* 33k SWCAN path: this station's CTS arrives in 43-58 ms */
+#define TP_EOM_TIMEOUT_MS   100u     /* same path as the CTS */
+#define TP_OVERALL_TIMEOUT_MS 500u   /* GB/T's outer limit is 5 s; a 33k BRM needs ~160 ms */
 
 #define PGN_CHM   0x002600u
 #define PGN_BHM   0x002700u
