@@ -255,7 +255,10 @@ static uint32_t decode_pgn_from_id(uint32_t id)
 static void build_and_send_BHM(void)
 {
 	uint8_t d[2];
-	put_u16le(d, g_batt.rated_V_dV);
+	/* SPN2601 is the maximum allowed charging voltage, not the rated
+	 * voltage from the BRM (SPN2568). A real station clamps its CML to
+	 * this value; 393.1 V would put the 408 V target out of range. */
+	put_u16le(d, ABSOLUTE_MAX_CHARGE_VOLTAGE_dV);
 	CanSendMsg(make_j1939_id(6, PGN_BHM, SA_BMS, SA_CHARGER), d, 2);
 }
 
@@ -289,7 +292,10 @@ static int build_and_send_BCP(void)
 	uint8_t p[13];
 	memset(p, 0xFF, sizeof(p));
 	put_u16le(&p[0], encode_cell_0p01V(ABLSOLUTE_MAX_CELL_VOLTAGE_MV)); // 4.255V max per cell
-	put_u16le(&p[2], encode_current_off400((int16_t)ABSOLUTE_MAX_CHARGE_CURRENT_dA)); // 50A max
+	/* GB/T 27930-2015 4.5: charging current is negative on the wire.
+	 * A positive value here is a discharge request; a real station flags
+	 * it as a current mismatch and stops after the BCP. */
+	put_u16le(&p[2], encode_current_off400(-(int16_t)ABSOLUTE_MAX_CHARGE_CURRENT_dA)); // 50A charge, raw 3500
 	put_u16le(&p[4], (uint16_t)NOMINAL_TOTAL_ENERGY_0p1KWH); // Nominal total energy in 0.1kWh, set to 20kWh
 	put_u16le(&p[6], encode_voltage_dV(ABSOLUTE_MAX_CHARGE_VOLTAGE_dV)); // Max charge voltage in dV, set to 5V above tail request voltage
 	p[8] = (uint8_t)(50 + 50); // Max battery temperature in C, set to 50C
