@@ -102,6 +102,8 @@ While enabled, every CAN frame is emitted as a CSV line
 | `DEMAND_CURRENT`       | 0.1 A (dA) | −4000 – 4000     | 0       | Target output current sent to charger in BCL. Positive = charge, negative = discharge direction. 100 dA = 10.0 A. |
 | `PACK_VOLTAGE`         | 0.1 V (dV) | 0 – 10000       | 3500    | Battery pack voltage reported to charger in BCS. Also updated from charger CCS messages during charging. 3500 dV = 350.0 V. |
 | `PACK_CURRENT`         | 0.1 A (dA) | −4000 – 4000     | 0       | Battery pack current reported to charger in BCS. Also updated from charger CCS messages during charging. |
+| `MAX_VOLTAGE`          | 0.1 V (dV) | 0 – 10000       | 4090    | Maximum allowed charging voltage sent in BHM and BCP (SPN2601/SPN2819). 4090 dV = 409.0 V. The port loads it from its flash settings; the CLI can change it. |
+| `MAX_CURRENT`          | 0.1 A (dA) | 0 – 4000        | 500     | Maximum allowed charging current sent in BCP (SPN2817) as a positive magnitude; the wire carries it negated (charge). 500 dA = 50.0 A. The port loads it from its flash settings; the CLI can change it. |
 | `MODE`                 | —         | 1 or 2             | 1       | Charging mode sent in BCL. `1` = CV (constant voltage), `2` = CC (constant current). Any value other than 2 is treated as 1. |
 
 ### Tail‑request thresholds

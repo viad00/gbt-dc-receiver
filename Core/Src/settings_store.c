@@ -24,7 +24,7 @@ __attribute__((weak)) bool FlashLog_IsEnabled(void) { return false; }
 __attribute__((weak)) void FlashLog_SetEnabled(bool enabled) { (void)enabled; }
 
 #define SETTINGS_MAGIC        ((uint32_t)0x5354534Bu) /* 'KSTS' */
-#define SETTINGS_VERSION      ((uint32_t)2u) /* v2: GbtRuntime gained BRO_WAIT_CONFIRM/BRO_CONFIRM/BRO_READY/WAIT_FOR_CHM/LOCK_BEFORE_START */
+#define SETTINGS_VERSION      ((uint32_t)3u) /* v3: GbtRuntime gained MAX_VOLTAGE/MAX_CURRENT */
 
 typedef struct {
 	uint32_t magic;

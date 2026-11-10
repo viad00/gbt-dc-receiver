@@ -147,7 +147,9 @@ static GbtRuntime g_runtime = {
 	.bro_confirm = 0, // UART CLI handshake flag, auto-cleared when a new charge session starts
 	.bro_ready = 0, // Status: 1 while BRO reports 0x00
 	.wait_for_chm = 1, // 0 = BHM from start (current behavior), 1 = silence until CHM (strict GB/T 27930)
-	.lock_before_start = 1 // 1 = armed in flash: boot waits for UART CLI handshake before any TX
+	.lock_before_start = 1, // 1 = armed in flash: boot waits for UART CLI handshake before any TX
+	.maxVoltage_dV = ABSOLUTE_MAX_CHARGE_VOLTAGE_dV, // BHM/BCP maximum, overridden by the port from flash
+	.maxCurrent_dA = ABSOLUTE_MAX_CHARGE_CURRENT_dA // BCP maximum charge current, positive; sent negated
 };
 
 static const GbtRuntime g_runtime_defaults = {
@@ -175,7 +177,9 @@ static const GbtRuntime g_runtime_defaults = {
 	.bro_confirm = 0,
 	.bro_ready = 0,
 	.wait_for_chm = 1,
-	.lock_before_start = 1
+	.lock_before_start = 1,
+	.maxVoltage_dV = ABSOLUTE_MAX_CHARGE_VOLTAGE_dV,
+	.maxCurrent_dA = ABSOLUTE_MAX_CHARGE_CURRENT_dA
 };
 
 static GbtChargeState g_state = GBT27930_CHARGE_STATE_WAIT_CHM;
@@ -256,9 +260,9 @@ static void build_and_send_BHM(void)
 {
 	uint8_t d[2];
 	/* SPN2601 is the maximum allowed charging voltage, not the rated
-	 * voltage from the BRM (SPN2568). A real station clamps its CML to
-	 * this value; 393.1 V would put the 408 V target out of range. */
-	put_u16le(d, ABSOLUTE_MAX_CHARGE_VOLTAGE_dV);
+	 * voltage from the BRM (SPN2568). The port loads this from its flash
+	 * settings; the CLI can change it at runtime. */
+	put_u16le(d, g_runtime.maxVoltage_dV);
 	CanSendMsg(make_j1939_id(6, PGN_BHM, SA_BMS, SA_CHARGER), d, 2);
 }
 
@@ -293,11 +297,10 @@ static int build_and_send_BCP(void)
 	memset(p, 0xFF, sizeof(p));
 	put_u16le(&p[0], encode_cell_0p01V(ABLSOLUTE_MAX_CELL_VOLTAGE_MV)); // 4.255V max per cell
 	/* GB/T 27930-2015 4.5: charging current is negative on the wire.
-	 * A positive value here is a discharge request; a real station flags
-	 * it as a current mismatch and stops after the BCP. */
-	put_u16le(&p[2], encode_current_off400(-(int16_t)ABSOLUTE_MAX_CHARGE_CURRENT_dA)); // 50A charge, raw 3500
+	 * MAX_CURRENT is stored as a positive magnitude (CLI/screen friendly). */
+	put_u16le(&p[2], encode_current_off400(-(int16_t)g_runtime.maxCurrent_dA));
 	put_u16le(&p[4], (uint16_t)NOMINAL_TOTAL_ENERGY_0p1KWH); // Nominal total energy in 0.1kWh, set to 20kWh
-	put_u16le(&p[6], encode_voltage_dV(ABSOLUTE_MAX_CHARGE_VOLTAGE_dV)); // Max charge voltage in dV, set to 5V above tail request voltage
+	put_u16le(&p[6], encode_voltage_dV(g_runtime.maxVoltage_dV)); // Maximum allowed total voltage
 	p[8] = (uint8_t)(50 + 50); // Max battery temperature in C, set to 50C
 	put_u16le(&p[9], (uint16_t)(g_runtime.soc_percent * 10u)); // Remaining energy in 0.1%, set to current SOC * 10
 	put_u16le(&p[11], g_runtime.packVoltage_dV); // Current battery voltage in dV
@@ -892,6 +895,8 @@ int32_t GbtGetRuntimeField(GbtRuntimeField field)
 		case GBT27930_RUNTIME_BRO_READY: return (int32_t)g_runtime.bro_ready;
 		case GBT27930_RUNTIME_WAIT_FOR_CHM: return (int32_t)g_runtime.wait_for_chm;
 		case GBT27930_RUNTIME_LOCK_BEFORE_START: return (int32_t)g_runtime.lock_before_start;
+		case GBT27930_RUNTIME_MAX_VOLTAGE: return (int32_t)g_runtime.maxVoltage_dV;
+		case GBT27930_RUNTIME_MAX_CURRENT: return (int32_t)g_runtime.maxCurrent_dA;
 		default: return 0;
 	}
 }
@@ -922,6 +927,8 @@ static const char *field_names[] = {
 	"BRO_READY",
 	"WAIT_FOR_CHM",
 	"LOCK_BEFORE_START",
+	"MAX_VOLTAGE",
+	"MAX_CURRENT",
 };
 
 const char *GbtRuntimeFieldName(GbtRuntimeField field)
@@ -1058,6 +1065,16 @@ void GbtSetRuntimeField(GbtRuntimeField field, int32_t value)
 			break;
 		case GBT27930_RUNTIME_LOCK_BEFORE_START:
 			g_runtime.lock_before_start = (value != 0) ? 1u : 0u;
+			break;
+		case GBT27930_RUNTIME_MAX_VOLTAGE:
+			if (value < 0) value = 0;
+			if (value > 10000) value = 10000;
+			g_runtime.maxVoltage_dV = (uint16_t)value;
+			break;
+		case GBT27930_RUNTIME_MAX_CURRENT:
+			if (value < 0) value = 0;
+			if (value > 4000) value = 4000;
+			g_runtime.maxCurrent_dA = (uint16_t)value;
 			break;
 		default:
 			break;

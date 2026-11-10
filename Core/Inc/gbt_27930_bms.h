@@ -44,6 +44,8 @@ typedef struct {
 	uint8_t  bro_ready;        /* status: 1 while BRO reports 0x00 (waiting phase) */
 	uint8_t  wait_for_chm;     /* 1 = transmit nothing until CHM arrives, BHM starts after CHM (strict GB/T 27930) */
 	uint8_t  lock_before_start; /* 1 = armed in flash: stay silent at boot until cleared over UART CLI */
+	uint16_t maxVoltage_dV;    /* SPN2601/SPN2819: maximum allowed charging voltage */
+	uint16_t maxCurrent_dA;    /* SPN2817: maximum allowed charging current, positive magnitude; sent negated (charge) */
 } GbtRuntime;
 
 typedef enum {
@@ -72,6 +74,8 @@ typedef enum {
 	GBT27930_RUNTIME_BRO_READY,
 	GBT27930_RUNTIME_WAIT_FOR_CHM,
 	GBT27930_RUNTIME_LOCK_BEFORE_START,
+	GBT27930_RUNTIME_MAX_VOLTAGE,
+	GBT27930_RUNTIME_MAX_CURRENT,
 	GBT27930_RUNTIME_FIELD_COUNT
 } GbtRuntimeField;
 

@@ -94,6 +94,8 @@ static UiButtonState ui_buttons[UI_BTN_COUNT] = {
 static const UiFieldMeta ui_quick_fields[] = {
   {GBT27930_RUNTIME_DEMAND_VOLTAGE, "DV", "V", 10, 1, 10},
   {GBT27930_RUNTIME_DEMAND_CURRENT, "DI", "A", 10, 1, 10},
+  {GBT27930_RUNTIME_MAX_VOLTAGE, "MV", "V", 10, 1, 10},
+  {GBT27930_RUNTIME_MAX_CURRENT, "MC", "A", 10, 1, 10},
   {GBT27930_RUNTIME_MODE, "MD", "", 1, 0, 1},
 };
 
@@ -106,6 +108,8 @@ static const UiFieldMeta ui_ccs_fields[] = {
 static const UiFieldMeta ui_all_fields[] = {
   {GBT27930_RUNTIME_DEMAND_VOLTAGE, "DV", "V", 10, 1, 5},
   {GBT27930_RUNTIME_DEMAND_CURRENT, "DI", "A", 10, 1, 5},
+  {GBT27930_RUNTIME_MAX_VOLTAGE, "MV", "V", 10, 1, 5},
+  {GBT27930_RUNTIME_MAX_CURRENT, "MC", "A", 10, 1, 5},
   {GBT27930_RUNTIME_MODE, "MD", "", 1, 0, 1},
   {GBT27930_RUNTIME_PACK_VOLTAGE, "PV", "V", 10, 1, 1},
   {GBT27930_RUNTIME_PACK_CURRENT, "PI", "A", 10, 1, 1},
