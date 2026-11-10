@@ -68,7 +68,7 @@ Connect a serial terminal to `UART4` (`PA0` TX, `PA1` RX) and send commands term
 
 - `RLIST` — lists all runtime fields with current values.
 - `RGET <FIELD>` — reads a single field (e.g. `RGET SOC_PERCENT`).
-- `RSET <FIELD> <value>` — writes a value to a field, clamped to allowed range (e.g. `RSET DEMAND_CURRENT 100`).
+- `RSET <FIELD> <value>` — writes a value to a field, clamped to allowed range. `DEMAND_CURRENT` and `PACK_CURRENT` are signed per GB/T 27930-2015 §4.5: **negative = charge**, positive = discharge (e.g. `RSET DEMAND_CURRENT -100` = 10.0 A charge).
 - `STATE` — prints the current charge state (`WAIT`, `BHM`, `BRM`, `BCP`, `BRO`, `CHG`, `END`).
 - `SAVE` — persists the current runtime fields to the settings store (flash sector on the MCU, file on Linux).
 - `DCAN [ON|OFF]` — queries/toggles the raw CAN frame trace.

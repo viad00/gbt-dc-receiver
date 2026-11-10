@@ -41,7 +41,7 @@ bool GbtCli_ProcessCommand(const char *cmd, GbtCliWriteFn write, void *user)
 			GbtRuntimeField f = GbtRuntimeFieldFromString(field_name);
 			if (f < GBT27930_RUNTIME_FIELD_COUNT) {
 				GbtSetRuntimeField(f, (int32_t)val);
-				cli_write(write, user, "SET %s=%ld\r\n", field_name, val);
+				cli_write(write, user, "SET %s=%ld\r\n", field_name, (long)GbtGetRuntimeField(f));
 			} else {
 				write(user, "UNKNOWN FIELD\r\n");
 			}

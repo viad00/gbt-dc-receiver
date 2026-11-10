@@ -123,15 +123,15 @@ static BattInfo g_batt = {
 
 // Runtime parameters
 static GbtRuntime g_runtime = {
-	.demandVoltage_dV = 4080u, // Start with demand voltage equal to rated voltage
-	.demandCurrent_dA = -00, // Start with demand current at 2.0A
+	.demandVoltage_dV = 4080u, // Initial BCL demand voltage, 408.0 V
+	.demandCurrent_dA = 0, // BCL demand: 0 A at boot; negative = charge (GB/T 4.5)
 	.mode = 0x01, // Start in CV mode
 	.packVoltage_dV = 3500, // Initial pack voltage in dV, set to 350V, will be updated based on messages received
 	.packCurrent_dA = 0,    // Initial pack current in dA, set to 0A, will be updated based on messages received
-	.tailSwitchVoltage_dV = 9000u, // Volage threshold for tail request in dV, set to 392.0V (Approx 4.1V per cell in 96s cell pack)
-	.tailSwitchCurrent_dA = 00,    // Current threshold for tail request in dA, set to 7A
-	.tailVoltage_dV = 4080u,      // Tail request voltage in dV, set to 408.0V (4.25V per cell in 96s cell pack)
-	.tailCurrent_dA = -00,        // Tail request current in dA, set to -7A
+	.tailSwitchVoltage_dV = 9000u, // Tail switch disabled: 900.0 V is above the pack
+	.tailSwitchCurrent_dA = 0,    // Tail switch disabled: no current is below 0 A
+	.tailVoltage_dV = 4080u,      // Tail demand voltage, 408.0 V
+	.tailCurrent_dA = 0,        // Tail demand current; negative = charge (GB/T 4.5)
 	.maxCell_mV = 3500, // Dummy max cell voltage reported
 	.maxCellGroup = 0, // Dummy max cell group
 	.soc_percent = 5, // Dummy SOC percent (Can be changed in runtime via lcd interface)

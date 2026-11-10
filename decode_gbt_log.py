@@ -320,7 +320,7 @@ def decode_bcp(d):
 
     Layout (per build_and_send_BCP):
       [0:1]  encode_cell_0p01V(maxCell_mV) → 0.01V, 12-bit
-      [2:3]  encode_current_off400(maxChargeCurrent_dA) → 1A, offset -400A
+      [2:3]  encode_current_off400(maxChargeCurrent_dA) → 0.1A, offset -400A
       [4:5]  nominalEnergy_0p1kWh → 0.1kWh
       [6:7]  maxChargeVoltage_dV → 0.1V
       [8]    maxTemp_C + 50
@@ -328,13 +328,13 @@ def decode_bcp(d):
       [11:12] packVoltage_dV → 0.1V
     """
     cell_raw = u16(d, 0) & 0x0FFF      # 12-bit, 0.01V
-    imax_raw = u16(d, 2)               # 1A/bit, -400A offset
+    imax     = (u16(d, 2) - 4000) / 10.0  # 0.1A/bit, -400A offset
     energy   = u16(d, 4)               # 0.1kWh
     vmax     = u16(d, 6)               # 0.1V
     tmax     = d[8] - 50                # °C, -50 offset
     soc      = u16(d, 9)               # 0.1%
     pack_v   = u16(d, 11)              # 0.1V, if present
-    return (f"CellMax={cell_raw/100:.2f}V  Imax={imax_raw - 400}A  "
+    return (f"CellMax={cell_raw/100:.2f}V  Imax={imax:.1f}A  "
             f"Energy={energy/10:.1f}kWh  Vmax={vmax/10:.1f}V  "
             f"Tmax={tmax}°C  SOC={soc/10:.1f}%  PackV={pack_v/10:.1f}V")
 
@@ -344,7 +344,7 @@ def decode_bcs(d):
 
     Layout per build_and_send_BCS (9 bytes):
       [0:1]  packVoltage_dV → 0.1V
-      [2:3]  encode_current_off400(packCurrent_dA) → 1A, offset -400A
+      [2:3]  encode_current_off400(packCurrent_dA) → 0.1A, offset -400A
       [4:5]  (maxCellGroup<<12) | cell_mV/10 → 0.01V, 12-bit + 4-bit group
       [6]    soc_percent → 1%
       [7:8]  remaining_min
@@ -352,13 +352,13 @@ def decode_bcs(d):
     if len(d) < 9:
         return f"[short {len(d)}B]"
     pack_v   = u16(d, 0)          # dV → 0.1V
-    iout     = u16(d, 2) - 400    # 1A/bit, -400A offset
+    iout     = (u16(d, 2) - 4000) / 10.0  # 0.1A/bit, -400A offset
     cell_raw = u16(d, 4)
     max_cell = cell_raw & 0x0FFF  # 12-bit → 0.01V
     max_grp  = (cell_raw >> 12) & 0xF
     soc      = d[6]               # 1%
     remain   = u16(d, 7)          # minutes
-    return (f"Vpack={pack_v/10:.1f}V  Iout={iout}A  "
+    return (f"Vpack={pack_v/10:.1f}V  Iout={iout:.1f}A  "
             f"CellMax#={max_grp}={max_cell/100:.2f}V  "
             f"SOC={soc}%  Remain={remain}min")
 
